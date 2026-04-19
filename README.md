@@ -10,6 +10,8 @@ UI podporuje **světlý/tmavý motiv**:
 - výchozí motiv se nastaví podle motivu systému,
 - v aplikaci jde kdykoli přepnout tlačítkem `Světlý` / `Tmavý`.
 
+Po spuštění se nejdřív zobrazí jen přihlašovací obrazovka. Přehled známek se otevře až po úspěšném přihlášení.
+
 ## Požadavky
 
 - Java 21+

@@ -5,6 +5,7 @@ import com.formdev.flatlaf.FlatLightLaf;
 import cz.nero.bakapi.model.GradeEntry;
 import cz.nero.bakapi.service.BakalariClient;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
 import java.awt.Color;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
@@ -38,12 +39,18 @@ public final class BakapiFrame extends JFrame {
         DARK
     }
 
+    private static final String LOGIN_CARD = "login";
+    private static final String GRADES_CARD = "grades";
+
     private ThemeMode currentTheme;
+    private boolean applyingTheme;
 
     private final JTextField baseUrlField = new JTextField(getEnvOrDefault("BAKA_BASE_URL", "https://bakalari.infis.cz"), 28);
     private final JTextField usernameField = new JTextField(getEnvOrDefault("BAKA_USER", ""), 20);
     private final JPasswordField passwordField = new JPasswordField(getEnvOrDefault("BAKA_PASS", ""), 20);
-    private final JButton loadButton = new JButton("Načíst známky");
+    private final JButton loginButton = new JButton("Přihlásit a načíst známky");
+    private final JButton refreshButton = new JButton("Obnovit");
+    private final JButton logoutButton = new JButton("Odhlásit");
     private final JToggleButton themeToggle = new JToggleButton();
     private final JLabel statusLabel = new JLabel("Připraveno");
     private final JProgressBar progressBar = new JProgressBar();
@@ -55,6 +62,8 @@ public final class BakapiFrame extends JFrame {
         }
     };
     private final JTable gradesTable = new JTable(tableModel);
+    private final CardLayout cardLayout = new CardLayout();
+    private final JPanel contentPanel = new JPanel(cardLayout);
     private final BakalariClient client = new BakalariClient();
 
     public BakapiFrame() {
@@ -71,27 +80,55 @@ public final class BakapiFrame extends JFrame {
         rootPanel.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
         setContentPane(rootPanel);
 
-        rootPanel.add(createFormPanel(), BorderLayout.NORTH);
-        rootPanel.add(createTablePanel(), BorderLayout.CENTER);
+        rootPanel.add(createHeaderPanel(), BorderLayout.NORTH);
+        contentPanel.add(createLoginPanel(), LOGIN_CARD);
+        contentPanel.add(createGradesPanel(), GRADES_CARD);
+        rootPanel.add(contentPanel, BorderLayout.CENTER);
         rootPanel.add(createStatusPanel(), BorderLayout.SOUTH);
 
-        loadButton.addActionListener(event -> loadGrades());
-        themeToggle.addActionListener(event -> switchTheme(themeToggle.isSelected() ? ThemeMode.DARK : ThemeMode.LIGHT));
+        loginButton.addActionListener(event -> loadGrades(true));
+        refreshButton.addActionListener(event -> loadGrades(false));
+        logoutButton.addActionListener(event -> logout());
+        themeToggle.addActionListener(event -> {
+            if (!applyingTheme) {
+                switchTheme(themeToggle.isSelected() ? ThemeMode.DARK : ThemeMode.LIGHT);
+            }
+        });
 
         configureComponentStyles();
         configureTable();
         switchTheme(currentTheme);
+        showLoginView();
     }
 
-    private JPanel createFormPanel() {
+    private JPanel createHeaderPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
+
+        JLabel titleLabel = new JLabel("BAKAPI");
+        titleLabel.putClientProperty("FlatLaf.styleClass", "h1");
+
+        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        rightPanel.setOpaque(false);
+        themeToggle.setToolTipText("Přepnout světlý/tmavý motiv");
+        rightPanel.add(themeToggle);
+
+        panel.add(titleLabel, BorderLayout.WEST);
+        panel.add(rightPanel, BorderLayout.EAST);
+        return panel;
+    }
+
+    private JPanel createLoginPanel() {
+        JPanel wrapper = new JPanel(new GridBagLayout());
+
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Přihlášení"),
-                BorderFactory.createEmptyBorder(8, 10, 8, 10)
+                BorderFactory.createTitledBorder("Přihlášení do Bakalářů"),
+                BorderFactory.createEmptyBorder(12, 12, 12, 12)
         ));
 
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(6, 6, 6, 6);
+        gbc.insets = new Insets(7, 7, 7, 7);
         gbc.anchor = GridBagConstraints.WEST;
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
@@ -122,24 +159,29 @@ public final class BakapiFrame extends JFrame {
         gbc.weightx = 1.0;
         panel.add(passwordField, gbc);
 
-        JPanel actionsPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        actionsPanel.setOpaque(false);
-        themeToggle.setToolTipText("Přepnout světlý/tmavý motiv");
-        actionsPanel.add(themeToggle);
-        actionsPanel.add(loadButton);
-
         gbc.gridx = 1;
         gbc.gridy = 3;
         gbc.weightx = 0;
         gbc.anchor = GridBagConstraints.EAST;
-        panel.add(actionsPanel, gbc);
+        panel.add(loginButton, gbc);
 
-        return panel;
+        wrapper.add(panel);
+        return wrapper;
     }
 
-    private JPanel createTablePanel() {
+    private JPanel createGradesPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        panel.setBorder(BorderFactory.createTitledBorder("Přehled známek"));
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("Přehled známek"),
+                BorderFactory.createEmptyBorder(8, 8, 8, 8)
+        ));
+
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        actions.setOpaque(false);
+        actions.add(refreshButton);
+        actions.add(logoutButton);
+
+        panel.add(actions, BorderLayout.NORTH);
         panel.add(new JScrollPane(gradesTable), BorderLayout.CENTER);
         return panel;
     }
@@ -173,21 +215,46 @@ public final class BakapiFrame extends JFrame {
         baseUrlField.putClientProperty("JTextField.placeholderText", "https://bakalari.infis.cz");
         usernameField.putClientProperty("JTextField.placeholderText", "uživatelské jméno");
         passwordField.putClientProperty("JTextField.placeholderText", "heslo");
-        loadButton.putClientProperty("JButton.buttonType", "roundRect");
+
+        loginButton.putClientProperty("JButton.buttonType", "roundRect");
+        refreshButton.putClientProperty("JButton.buttonType", "roundRect");
+        logoutButton.putClientProperty("JButton.buttonType", "roundRect");
         themeToggle.putClientProperty("JButton.buttonType", "roundRect");
     }
 
     private void switchTheme(ThemeMode themeMode) {
-        applyTheme(themeMode);
-        currentTheme = themeMode;
-        SwingUtilities.updateComponentTreeUI(this);
-        configureTable();
-        themeToggle.setSelected(themeMode == ThemeMode.DARK);
-        updateThemeToggleText();
+        applyingTheme = true;
+        try {
+            applyTheme(themeMode);
+            currentTheme = themeMode;
+            SwingUtilities.updateComponentTreeUI(this);
+            configureComponentStyles();
+            configureTable();
+            if (themeToggle.isSelected() != (themeMode == ThemeMode.DARK)) {
+                themeToggle.setSelected(themeMode == ThemeMode.DARK);
+            }
+            updateThemeToggleText();
+        } finally {
+            applyingTheme = false;
+        }
     }
 
     private void updateThemeToggleText() {
         themeToggle.setText(themeToggle.isSelected() ? "Tmavý" : "Světlý");
+    }
+
+    private void showLoginView() {
+        cardLayout.show(contentPanel, LOGIN_CARD);
+    }
+
+    private void showGradesView() {
+        cardLayout.show(contentPanel, GRADES_CARD);
+    }
+
+    private void logout() {
+        tableModel.setRowCount(0);
+        statusLabel.setText("Odhlášeno.");
+        showLoginView();
     }
 
     private static ThemeMode detectSystemTheme() {
@@ -251,14 +318,13 @@ public final class BakapiFrame extends JFrame {
         }
     }
 
-    private void loadGrades() {
+    private void loadGrades(boolean loginFlow) {
         String baseUrl = baseUrlField.getText();
         String username = usernameField.getText();
         String password = new String(passwordField.getPassword());
 
-        loadButton.setEnabled(false);
-        progressBar.setVisible(true);
-        statusLabel.setText("Načítám známky...");
+        setLoadingState(true);
+        statusLabel.setText(loginFlow ? "Přihlašuji a načítám známky..." : "Obnovuji známky...");
 
         SwingWorker<List<GradeEntry>, Void> worker = new SwingWorker<>() {
             @Override
@@ -271,6 +337,7 @@ public final class BakapiFrame extends JFrame {
                 try {
                     List<GradeEntry> grades = get();
                     updateTable(grades);
+                    showGradesView();
 
                     if (grades.isEmpty()) {
                         statusLabel.setText("Na stránce nebyly nalezeny žádné známky.");
@@ -287,13 +354,20 @@ public final class BakapiFrame extends JFrame {
                     statusLabel.setText("Načítání selhalo.");
                     showError(message);
                 } finally {
-                    loadButton.setEnabled(true);
-                    progressBar.setVisible(false);
+                    setLoadingState(false);
                 }
             }
         };
 
         worker.execute();
+    }
+
+    private void setLoadingState(boolean loading) {
+        loginButton.setEnabled(!loading);
+        refreshButton.setEnabled(!loading);
+        logoutButton.setEnabled(!loading);
+        themeToggle.setEnabled(!loading);
+        progressBar.setVisible(loading);
     }
 
     private void updateTable(List<GradeEntry> grades) {
