@@ -18,6 +18,14 @@ V přehledu známek je:
 - souhrn po předmětech: vážený průměr (2 desetinná místa), výsledná známka a slovní hodnocení,
 - celkový průměr výsledných známek napříč předměty.
 
+Tabulka známek a tabulka průměrů jsou oddělené do záložek (`Známky` / `Průměry předmětů`).
+
+Další statistiky:
+- záložka `Statistika známek`: počty jednotlivých známek (1–5) pro každý předmět,
+- v záložce `Průměry předmětů`: rozložení výsledných známek (kolik předmětů vychází na 1, 2, 3, 4, 5).
+
+Tabulka statistiky známek používá dynamické sloupce podle reálně nalezených známek (např. `N`). Známky typu `1-` se započítávají do sloupce `1`.
+
 ## Požadavky
 
 - Java 21+

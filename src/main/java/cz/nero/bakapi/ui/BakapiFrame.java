@@ -36,8 +36,10 @@ import javax.swing.JProgressBar;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTable;
+import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
 import javax.swing.JToggleButton;
+import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
@@ -45,6 +47,7 @@ import javax.swing.UIManager;
 import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.event.ListSelectionListener;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableRowSorter;
@@ -59,6 +62,7 @@ public final class BakapiFrame extends JFrame {
     private static final String GRADES_CARD = "grades";
     private static final Pattern SINGLE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*([+-]?)$");
     private static final Pattern RANGE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*[-–]\\s*([1-5])$");
+    private static final Pattern LEADING_NUMERIC_MARK_PATTERN = Pattern.compile("^\\s*([1-5])");
 
     private ThemeMode currentTheme;
     private boolean applyingTheme;
@@ -95,6 +99,25 @@ public final class BakapiFrame extends JFrame {
     };
     private final JTable subjectSummaryTable = new JTable(subjectSummaryTableModel);
     private final JLabel overallAverageLabel = new JLabel("Celkový průměr výsledných známek: -");
+
+    private final DefaultTableModel subjectGradeCountsTableModel = new DefaultTableModel(
+            new Object[]{"Předmět", "1", "2", "3", "4", "5", "Celkem"}, 0) {
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            return false;
+        }
+    };
+    private final JTable subjectGradeCountsTable = new JTable(subjectGradeCountsTableModel);
+
+    private final DefaultTableModel resultGradeDistributionTableModel = new DefaultTableModel(
+            new Object[]{"Metrika", "1", "2", "3", "4", "5"}, 0) {
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            return false;
+        }
+    };
+    private final JTable resultGradeDistributionTable = new JTable(resultGradeDistributionTableModel);
+
     private final Map<String, Color> subjectColorCache = new LinkedHashMap<>();
 
     private final CardLayout cardLayout = new CardLayout();
@@ -219,28 +242,32 @@ public final class BakapiFrame extends JFrame {
         actions.add(refreshButton);
         actions.add(logoutButton);
 
-        JPanel topSection = new JPanel(new BorderLayout(0, 10));
-        topSection.setOpaque(false);
-        topSection.add(actions, BorderLayout.NORTH);
-        topSection.add(createFilterPanel(), BorderLayout.CENTER);
-        panel.add(topSection, BorderLayout.NORTH);
+        panel.add(actions, BorderLayout.NORTH);
 
-        JScrollPane gradesScroll = new JScrollPane(gradesTable);
+        JPanel gradesTab = new JPanel(new BorderLayout(0, 10));
+        gradesTab.add(createFilterPanel(), BorderLayout.NORTH);
+        gradesTab.add(new JScrollPane(gradesTable), BorderLayout.CENTER);
 
-        JPanel summaryPanel = new JPanel(new BorderLayout(0, 8));
-        summaryPanel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Souhrn"),
-                BorderFactory.createEmptyBorder(6, 6, 6, 6)
-        ));
-        summaryPanel.add(new JScrollPane(subjectSummaryTable), BorderLayout.CENTER);
-        summaryPanel.add(overallAverageLabel, BorderLayout.SOUTH);
-        summaryPanel.setPreferredSize(new Dimension(0, 210));
+        JPanel summaryTab = new JPanel(new BorderLayout(0, 8));
+        JSplitPane summarySplit = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                new JScrollPane(subjectSummaryTable),
+                new JScrollPane(resultGradeDistributionTable)
+        );
+        summarySplit.setResizeWeight(0.74);
+        summarySplit.setContinuousLayout(true);
+        summarySplit.setBorder(null);
+        summaryTab.add(summarySplit, BorderLayout.CENTER);
+        summaryTab.add(overallAverageLabel, BorderLayout.SOUTH);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, gradesScroll, summaryPanel);
-        splitPane.setResizeWeight(0.72);
-        splitPane.setContinuousLayout(true);
-        splitPane.setBorder(null);
-        panel.add(splitPane, BorderLayout.CENTER);
+        JPanel subjectCountsTab = new JPanel(new BorderLayout(0, 8));
+        subjectCountsTab.add(new JScrollPane(subjectGradeCountsTable), BorderLayout.CENTER);
+
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("Známky", gradesTab);
+        tabs.addTab("Průměry předmětů", summaryTab);
+        tabs.addTab("Statistika známek", subjectCountsTab);
+        panel.add(tabs, BorderLayout.CENTER);
 
         return panel;
     }
@@ -288,13 +315,14 @@ public final class BakapiFrame extends JFrame {
     }
 
     private void configureTables() {
+        Color gridColor = currentTheme == ThemeMode.DARK ? new Color(115, 125, 140) : new Color(185, 195, 210);
+
         gradesTable.setRowSorter(gradesSorter);
         gradesTable.setFillsViewportHeight(true);
         gradesTable.setAutoCreateRowSorter(false);
         gradesTable.setRowHeight(32);
-        gradesTable.setShowVerticalLines(false);
-        gradesTable.setShowHorizontalLines(true);
         gradesTable.getTableHeader().setReorderingAllowed(false);
+        applyGridStyle(gradesTable, gridColor);
         DefaultTableCellRenderer subjectColorRenderer = createSubjectColorRenderer(gradesTable, gradesTableModel);
         for (int column = 0; column < gradesTable.getColumnModel().getColumnCount(); column++) {
             gradesTable.getColumnModel().getColumn(column).setCellRenderer(subjectColorRenderer);
@@ -302,13 +330,54 @@ public final class BakapiFrame extends JFrame {
 
         subjectSummaryTable.setFillsViewportHeight(true);
         subjectSummaryTable.setRowHeight(30);
-        subjectSummaryTable.setShowVerticalLines(false);
-        subjectSummaryTable.setShowHorizontalLines(true);
         subjectSummaryTable.getTableHeader().setReorderingAllowed(false);
+        applyGridStyle(subjectSummaryTable, gridColor);
         DefaultTableCellRenderer summaryColorRenderer = createSubjectColorRenderer(subjectSummaryTable, subjectSummaryTableModel);
         for (int column = 0; column < subjectSummaryTable.getColumnModel().getColumnCount(); column++) {
             subjectSummaryTable.getColumnModel().getColumn(column).setCellRenderer(summaryColorRenderer);
         }
+
+        subjectGradeCountsTable.setFillsViewportHeight(true);
+        subjectGradeCountsTable.setRowHeight(30);
+        subjectGradeCountsTable.getTableHeader().setReorderingAllowed(false);
+        applyGridStyle(subjectGradeCountsTable, gridColor);
+        DefaultTableCellRenderer subjectCountsRenderer = createSubjectColorRenderer(subjectGradeCountsTable, subjectGradeCountsTableModel);
+        for (int column = 0; column < subjectGradeCountsTable.getColumnModel().getColumnCount(); column++) {
+            subjectGradeCountsTable.getColumnModel().getColumn(column).setCellRenderer(subjectCountsRenderer);
+        }
+
+        resultGradeDistributionTable.setFillsViewportHeight(true);
+        resultGradeDistributionTable.setRowHeight(30);
+        resultGradeDistributionTable.getTableHeader().setReorderingAllowed(false);
+        applyGridStyle(resultGradeDistributionTable, gridColor);
+        DefaultTableCellRenderer resultDistributionRenderer = createStripedRenderer(resultGradeDistributionTable);
+        for (int column = 0; column < resultGradeDistributionTable.getColumnModel().getColumnCount(); column++) {
+            resultGradeDistributionTable.getColumnModel().getColumn(column).setCellRenderer(resultDistributionRenderer);
+        }
+    }
+
+    private void applyGridStyle(JTable table, Color gridColor) {
+        table.setShowVerticalLines(true);
+        table.setShowHorizontalLines(true);
+        table.setGridColor(gridColor);
+        table.setIntercellSpacing(new Dimension(1, 1));
+        table.setCellSelectionEnabled(true);
+        table.setRowSelectionAllowed(true);
+        table.setColumnSelectionAllowed(true);
+        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        table.getColumnModel().getSelectionModel().setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        installCrossHighlightRepaint(table);
+    }
+
+    private void installCrossHighlightRepaint(JTable table) {
+        if (Boolean.TRUE.equals(table.getClientProperty("crossHighlightInstalled"))) {
+            return;
+        }
+
+        ListSelectionListener repaintListener = event -> table.repaint();
+        table.getSelectionModel().addListSelectionListener(repaintListener);
+        table.getColumnModel().getSelectionModel().addListSelectionListener(repaintListener);
+        table.putClientProperty("crossHighlightInstalled", true);
     }
 
     private void configureComponentStyles() {
@@ -364,6 +433,8 @@ public final class BakapiFrame extends JFrame {
         clearFilters();
         gradesTableModel.setRowCount(0);
         subjectSummaryTableModel.setRowCount(0);
+        subjectGradeCountsTableModel.setRowCount(0);
+        resultGradeDistributionTableModel.setRowCount(0);
         overallAverageLabel.setText("Celkový průměr výsledných známek: -");
         statusLabel.setText("Odhlášeno.");
         showLoginView();
@@ -416,11 +487,21 @@ public final class BakapiFrame extends JFrame {
     private void rebuildTables(List<GradeEntry> grades) {
         gradesTableModel.setRowCount(0);
         subjectSummaryTableModel.setRowCount(0);
+        subjectGradeCountsTableModel.setRowCount(0);
+        resultGradeDistributionTableModel.setRowCount(0);
 
         List<ComputedGradeRow> computedRows = new ArrayList<>();
         Map<String, Double> subjectWeightTotals = new LinkedHashMap<>();
         Map<String, SubjectStats> subjectStats = new LinkedHashMap<>();
         Map<String, String> subjectDisplayNames = new LinkedHashMap<>();
+        Map<String, Map<String, Integer>> subjectGradeCounts = new LinkedHashMap<>();
+        Map<String, Integer> subjectTotals = new LinkedHashMap<>();
+        Map<String, String> presentGradeBuckets = new LinkedHashMap<>();
+        presentGradeBuckets.put("1", "1");
+        presentGradeBuckets.put("2", "2");
+        presentGradeBuckets.put("3", "3");
+        presentGradeBuckets.put("4", "4");
+        presentGradeBuckets.put("5", "5");
 
         for (GradeEntry grade : grades) {
             Double markValue = parseMarkValue(grade.markText());
@@ -430,10 +511,18 @@ public final class BakapiFrame extends JFrame {
 
             String subjectKey = normalizeSubject(grade.subject());
             subjectDisplayNames.putIfAbsent(subjectKey, grade.subject());
+            subjectGradeCounts.computeIfAbsent(subjectKey, key -> new LinkedHashMap<>());
 
             if (markValue != null) {
                 subjectWeightTotals.merge(subjectKey, weightValue, Double::sum);
                 subjectStats.computeIfAbsent(subjectKey, key -> new SubjectStats()).add(markValue, weightValue);
+            }
+
+            String bucket = resolveGradeBucket(grade.markText(), markValue);
+            if (!bucket.isEmpty()) {
+                subjectGradeCounts.get(subjectKey).merge(bucket, 1, Integer::sum);
+                subjectTotals.merge(subjectKey, 1, Integer::sum);
+                presentGradeBuckets.putIfAbsent(bucket, bucket);
             }
         }
 
@@ -463,6 +552,7 @@ public final class BakapiFrame extends JFrame {
 
         double overallFinalGradeSum = 0.0;
         int overallFinalGradeCount = 0;
+        int[] resultGradeCounts = new int[6];
 
         for (Map.Entry<String, SubjectStats> entry : subjectStats.entrySet()) {
             SubjectStats stats = entry.getValue();
@@ -483,7 +573,46 @@ public final class BakapiFrame extends JFrame {
 
             overallFinalGradeSum += finalGrade;
             overallFinalGradeCount++;
+            resultGradeCounts[finalGrade]++;
         }
+
+        List<String> extraBuckets = new ArrayList<>();
+        for (String bucket : presentGradeBuckets.keySet()) {
+            if (!bucket.matches("[1-5]")) {
+                extraBuckets.add(bucket);
+            }
+        }
+        extraBuckets.sort(String.CASE_INSENSITIVE_ORDER);
+
+        List<String> orderedBuckets = new ArrayList<>(List.of("1", "2", "3", "4", "5"));
+        orderedBuckets.addAll(extraBuckets);
+
+        List<Object> subjectCountColumns = new ArrayList<>();
+        subjectCountColumns.add("Předmět");
+        subjectCountColumns.addAll(orderedBuckets);
+        subjectCountColumns.add("Celkem");
+        subjectGradeCountsTableModel.setColumnIdentifiers(subjectCountColumns.toArray());
+
+        for (Map.Entry<String, String> subjectEntry : subjectDisplayNames.entrySet()) {
+            Map<String, Integer> counts = subjectGradeCounts.getOrDefault(subjectEntry.getKey(), Map.of());
+            Object[] row = new Object[subjectCountColumns.size()];
+            row[0] = subjectEntry.getValue();
+            for (int i = 0; i < orderedBuckets.size(); i++) {
+                row[i + 1] = formatCountCell(counts.getOrDefault(orderedBuckets.get(i), 0));
+            }
+            row[row.length - 1] = formatCountCell(subjectTotals.getOrDefault(subjectEntry.getKey(), 0));
+            subjectGradeCountsTableModel.addRow(row);
+        }
+
+        resultGradeDistributionTableModel.setColumnIdentifiers(new Object[]{"Metrika", "1", "2", "3", "4", "5"});
+        resultGradeDistributionTableModel.addRow(new Object[]{
+                "Počet předmětů",
+                formatCountCell(resultGradeCounts[1]),
+                formatCountCell(resultGradeCounts[2]),
+                formatCountCell(resultGradeCounts[3]),
+                formatCountCell(resultGradeCounts[4]),
+                formatCountCell(resultGradeCounts[5])
+        });
 
         if (overallFinalGradeCount > 0) {
             double overallAverage = overallFinalGradeSum / overallFinalGradeCount;
@@ -496,6 +625,7 @@ public final class BakapiFrame extends JFrame {
             overallAverageLabel.setText("Celkový průměr výsledných známek: -");
         }
 
+        configureTables();
         refreshFilterOptions();
     }
 
@@ -656,7 +786,7 @@ public final class BakapiFrame extends JFrame {
         UIManager.put("ProgressBar.arc", 999);
         UIManager.put("ScrollBar.thumbArc", 999);
         UIManager.put("ScrollBar.width", 12);
-        UIManager.put("Table.showVerticalLines", false);
+        UIManager.put("Table.showVerticalLines", true);
         UIManager.put("Table.rowHeight", 32);
         UIManager.put("TitlePane.unifiedBackground", true);
 
@@ -737,6 +867,23 @@ public final class BakapiFrame extends JFrame {
         return Math.max(1.0, Math.min(5.0, value));
     }
 
+    private static String resolveGradeBucket(String markText, Double parsedMarkValue) {
+        if (markText == null || markText.isBlank()) {
+            return "";
+        }
+
+        Matcher leadingNumericMatcher = LEADING_NUMERIC_MARK_PATTERN.matcher(markText);
+        if (leadingNumericMatcher.find()) {
+            return leadingNumericMatcher.group(1);
+        }
+
+        if (parsedMarkValue != null) {
+            return Integer.toString(toFinalGrade(parsedMarkValue));
+        }
+
+        return markText.trim().toUpperCase(Locale.ROOT);
+    }
+
     private static String formatWeight(double weight) {
         if (Math.abs(weight - Math.rint(weight)) < 0.0001) {
             return Long.toString(Math.round(weight));
@@ -746,6 +893,10 @@ public final class BakapiFrame extends JFrame {
 
     private static String formatTwoDecimals(double value) {
         return String.format(Locale.US, "%.2f", value);
+    }
+
+    private static Object formatCountCell(int count) {
+        return count == 0 ? "" : count;
     }
 
     private static int toFinalGrade(double average) {
@@ -775,15 +926,33 @@ public final class BakapiFrame extends JFrame {
                     int column
             ) {
                 Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                if (isSelected) {
-                    return component;
-                }
-
                 int modelRow = table.convertRowIndexToModel(row);
                 Object subjectValue = model.getValueAt(modelRow, 0);
                 String subject = subjectValue == null ? "" : subjectValue.toString();
                 Color baseColor = getColorForSubject(subject);
-                component.setBackground(applyRowStripe(baseColor, row));
+                Color stripedColor = applyRowStripe(baseColor, row);
+                component.setBackground(applySelectionCrossHighlight(table, stripedColor, row, column, isSelected));
+                component.setForeground(UIManager.getColor("Table.foreground"));
+                return component;
+            }
+        };
+    }
+
+    private DefaultTableCellRenderer createStripedRenderer(JTable table) {
+        return new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(
+                    JTable table,
+                    Object value,
+                    boolean isSelected,
+                    boolean hasFocus,
+                    int row,
+                    int column
+            ) {
+                Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                Color base = UIManager.getColor("Table.background");
+                Color stripedColor = applyRowStripe(base, row);
+                component.setBackground(applySelectionCrossHighlight(table, stripedColor, row, column, isSelected));
                 component.setForeground(UIManager.getColor("Table.foreground"));
                 return component;
             }
@@ -814,6 +983,21 @@ public final class BakapiFrame extends JFrame {
             return baseColor;
         }
         return currentTheme == ThemeMode.DARK ? adjustBrightness(baseColor, 1.12) : adjustBrightness(baseColor, 0.92);
+    }
+
+    private Color applySelectionCrossHighlight(JTable table, Color baseColor, int row, int column, boolean isSelectedCell) {
+        int selectedRow = table.getSelectedRow();
+        int selectedColumn = table.getSelectedColumn();
+
+        if (isSelectedCell) {
+            return currentTheme == ThemeMode.DARK ? adjustBrightness(baseColor, 1.45) : adjustBrightness(baseColor, 0.65);
+        }
+
+        if (selectedRow >= 0 && selectedColumn >= 0 && (row == selectedRow || column == selectedColumn)) {
+            return currentTheme == ThemeMode.DARK ? adjustBrightness(baseColor, 1.26) : adjustBrightness(baseColor, 0.80);
+        }
+
+        return baseColor;
     }
 
     private static Color adjustBrightness(Color color, double factor) {
