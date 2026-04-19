@@ -179,11 +179,9 @@ public final class BakalariClient {
     }
 
     private static String getTeacher(JsonNode data, Element markElement, Map<String, String> teacherBySubject, String subject) {
-        for (String key : TEACHER_KEYS) {
-            String value = textOrDefault(data.get(key), "");
-            if (!value.isBlank()) {
-                return value;
-            }
+        String teacherFromSubjectMap = teacherBySubject.getOrDefault(normalizeSubjectKey(subject), "");
+        if (!teacherFromSubjectMap.isBlank()) {
+            return teacherFromSubjectMap;
         }
 
         String teacherFromSubjectRow = getTeacherFromSubjectRow(markElement);
@@ -191,7 +189,13 @@ public final class BakalariClient {
             return teacherFromSubjectRow;
         }
 
-        return teacherBySubject.getOrDefault(normalizeSubjectKey(subject), "");
+        for (String key : TEACHER_KEYS) {
+            String value = textOrDefault(data.get(key), "");
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private static String getTeacherFromSubjectRow(Element markElement) {
@@ -355,7 +359,7 @@ public final class BakalariClient {
         if (normalizedSubject.contains("předmět") && normalizedTeacher.contains("učitel")) {
             return;
         }
-        teacherMap.putIfAbsent(normalizedSubject, normalizedTeacher);
+        teacherMap.put(normalizedSubject, normalizedTeacher);
     }
 
     private static String normalizeSubjectKey(String subject) {

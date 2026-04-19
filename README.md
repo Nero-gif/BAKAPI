@@ -6,6 +6,10 @@ Učitelé se načítají z dalších zdrojů Bakalářů:
 - stránka předmětů (`/next/predmety.aspx`, případně `/next/subjects.aspx`)
 - fallback přes API (`/api/login` + `/api/3/subjects`)
 
+UI podporuje **světlý/tmavý motiv**:
+- výchozí motiv se nastaví podle motivu systému,
+- v aplikaci jde kdykoli přepnout tlačítkem `Světlý` / `Tmavý`.
+
 ## Požadavky
 
 - Java 21+

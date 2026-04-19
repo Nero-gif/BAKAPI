@@ -1,1 +1,18 @@
-.idea
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Build output
+target/
+out/
+*.class
+
+# Local environment / secrets
+.env
+.env.*
+
+# OS / misc
+.DS_Store
+Thumbs.db
+*.log
