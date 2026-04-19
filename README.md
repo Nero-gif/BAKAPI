@@ -12,6 +12,12 @@ UI podporuje **světlý/tmavý motiv**:
 
 Po spuštění se nejdřív zobrazí jen přihlašovací obrazovka. Přehled známek se otevře až po úspěšném přihlášení.
 
+V přehledu známek je:
+- filtrovatelný každý sloupec (textové filtry),
+- u každé známky spočtený příspěvek do váženého průměru předmětu,
+- souhrn po předmětech: vážený průměr (2 desetinná místa), výsledná známka a slovní hodnocení,
+- celkový průměr výsledných známek napříč předměty.
+
 ## Požadavky
 
 - Java 21+
