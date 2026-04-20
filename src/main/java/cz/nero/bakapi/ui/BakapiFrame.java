@@ -9,6 +9,7 @@ import java.awt.CardLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.Font;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
@@ -593,16 +594,31 @@ public final class BakapiFrame extends JFrame {
         subjectCountColumns.add("Celkem");
         subjectGradeCountsTableModel.setColumnIdentifiers(subjectCountColumns.toArray());
 
+        Map<String, Integer> totalByBucket = new LinkedHashMap<>();
+        int totalMarksCount = 0;
+
         for (Map.Entry<String, String> subjectEntry : subjectDisplayNames.entrySet()) {
             Map<String, Integer> counts = subjectGradeCounts.getOrDefault(subjectEntry.getKey(), Map.of());
             Object[] row = new Object[subjectCountColumns.size()];
             row[0] = subjectEntry.getValue();
             for (int i = 0; i < orderedBuckets.size(); i++) {
-                row[i + 1] = formatCountCell(counts.getOrDefault(orderedBuckets.get(i), 0));
+                int count = counts.getOrDefault(orderedBuckets.get(i), 0);
+                totalByBucket.merge(orderedBuckets.get(i), count, Integer::sum);
+                row[i + 1] = formatCountCell(count);
             }
-            row[row.length - 1] = formatCountCell(subjectTotals.getOrDefault(subjectEntry.getKey(), 0));
+            int subjectTotal = subjectTotals.getOrDefault(subjectEntry.getKey(), 0);
+            totalMarksCount += subjectTotal;
+            row[row.length - 1] = formatCountCell(subjectTotal);
             subjectGradeCountsTableModel.addRow(row);
         }
+
+        Object[] totalsRow = new Object[subjectCountColumns.size()];
+        totalsRow[0] = formatCountCell(subjectDisplayNames.size());
+        for (int i = 0; i < orderedBuckets.size(); i++) {
+            totalsRow[i + 1] = formatCountCell(totalByBucket.getOrDefault(orderedBuckets.get(i), 0));
+        }
+        totalsRow[totalsRow.length - 1] = formatCountCell(totalMarksCount);
+        subjectGradeCountsTableModel.addRow(totalsRow);
 
         resultGradeDistributionTableModel.setColumnIdentifiers(new Object[]{"Metrika", "1", "2", "3", "4", "5"});
         resultGradeDistributionTableModel.addRow(new Object[]{
@@ -927,12 +943,26 @@ public final class BakapiFrame extends JFrame {
             ) {
                 Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 int modelRow = table.convertRowIndexToModel(row);
+                boolean isSubjectTotalsRow = model == subjectGradeCountsTableModel
+                        && model.getRowCount() > 0
+                        && modelRow == model.getRowCount() - 1;
+
+                if (isSubjectTotalsRow) {
+                    Color totalsBase = currentTheme == ThemeMode.DARK ? new Color(96, 102, 114) : new Color(220, 225, 234);
+                    Color stripedTotals = applyRowStripe(totalsBase, row);
+                    component.setBackground(applySelectionCrossHighlight(table, stripedTotals, row, column, isSelected));
+                    component.setForeground(UIManager.getColor("Table.foreground"));
+                    component.setFont(component.getFont().deriveFont(Font.BOLD));
+                    return component;
+                }
+
                 Object subjectValue = model.getValueAt(modelRow, 0);
                 String subject = subjectValue == null ? "" : subjectValue.toString();
                 Color baseColor = getColorForSubject(subject);
                 Color stripedColor = applyRowStripe(baseColor, row);
                 component.setBackground(applySelectionCrossHighlight(table, stripedColor, row, column, isSelected));
                 component.setForeground(UIManager.getColor("Table.foreground"));
+                component.setFont(table.getFont());
                 return component;
             }
         };
@@ -958,6 +988,7 @@ public final class BakapiFrame extends JFrame {
             }
         };
     }
+
 
     private Color getColorForSubject(String subject) {
         String key = normalizeSubject(subject);
