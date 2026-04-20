@@ -8,6 +8,7 @@ public record GradeEntry(
         String caption,
         String note,
         String weight,
-        String date
+        String date,
+        String planStatus
 ) {
 }

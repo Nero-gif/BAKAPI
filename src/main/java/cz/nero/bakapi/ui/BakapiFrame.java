@@ -55,6 +55,7 @@ import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.event.ListSelectionListener;
+import javax.swing.event.TableModelEvent;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableRowSorter;
@@ -70,6 +71,7 @@ public final class BakapiFrame extends JFrame {
     private static final Pattern SINGLE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*([+-]?)$");
     private static final Pattern RANGE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*[-–]\\s*([1-5])$");
     private static final Pattern LEADING_NUMERIC_MARK_PATTERN = Pattern.compile("^\\s*([1-5])");
+    private static final List<String> PLAN_STATUS_OPTIONS = List.of("nelze", "je v plánu", "neni v plánu", "mohl bych");
 
     private ThemeMode currentTheme;
     private boolean applyingTheme;
@@ -126,6 +128,17 @@ public final class BakapiFrame extends JFrame {
     };
     private final JTable resultGradeDistributionTable = new JTable(resultGradeDistributionTableModel);
 
+    private final DefaultTableModel planTableModel = new DefaultTableModel(
+            new Object[]{"Předmět", "Učitel", "Známka", "Téma", "Datum", "Plán doplnění"}, 0) {
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            return column == 5;
+        }
+    };
+    private final JTable planTable = new JTable(planTableModel);
+    private final List<Integer> planTableGradeIndexes = new ArrayList<>();
+    private boolean updatingPlanTable;
+
     private final Map<String, Color> subjectColorCache = new LinkedHashMap<>();
 
     private final CardLayout cardLayout = new CardLayout();
@@ -133,6 +146,9 @@ public final class BakapiFrame extends JFrame {
     private final BakalariClient client = new BakalariClient();
     private final ProfileStore profileStore = new ProfileStore();
     private final Map<String, UserProfile> profilesByUsername = new LinkedHashMap<>();
+    private List<GradeEntry> currentGrades = List.of();
+    private UserProfile currentUserProfile;
+    private char[] currentSessionPassword;
 
     public BakapiFrame() {
         super("BAKAPI - Přehled známek");
@@ -169,6 +185,7 @@ public final class BakapiFrame extends JFrame {
                 switchTheme(themeToggle.isSelected() ? ThemeMode.DARK : ThemeMode.LIGHT);
             }
         });
+        planTableModel.addTableModelListener(this::onPlanTableEdited);
 
         configureComponentStyles();
         configureTables();
@@ -278,10 +295,14 @@ public final class BakapiFrame extends JFrame {
         JPanel subjectCountsTab = new JPanel(new BorderLayout(0, 8));
         subjectCountsTab.add(new JScrollPane(subjectGradeCountsTable), BorderLayout.CENTER);
 
+        JPanel planTab = new JPanel(new BorderLayout(0, 8));
+        planTab.add(new JScrollPane(planTable), BorderLayout.CENTER);
+
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("Známky", gradesTab);
         tabs.addTab("Průměry předmětů", summaryTab);
         tabs.addTab("Statistika známek", subjectCountsTab);
+        tabs.addTab("Známky k doplnění", planTab);
         panel.add(tabs, BorderLayout.CENTER);
 
         return panel;
@@ -369,6 +390,22 @@ public final class BakapiFrame extends JFrame {
         for (int column = 0; column < resultGradeDistributionTable.getColumnModel().getColumnCount(); column++) {
             resultGradeDistributionTable.getColumnModel().getColumn(column).setCellRenderer(resultDistributionRenderer);
         }
+
+        planTable.setFillsViewportHeight(true);
+        planTable.setRowHeight(30);
+        planTable.getTableHeader().setReorderingAllowed(false);
+        applyGridStyle(planTable, gridColor);
+        DefaultTableCellRenderer planRenderer = createSubjectColorRenderer(planTable, planTableModel);
+        for (int column = 0; column < planTable.getColumnModel().getColumnCount(); column++) {
+            planTable.getColumnModel().getColumn(column).setCellRenderer(planRenderer);
+        }
+
+        JComboBox<String> planEditorCombo = new JComboBox<>();
+        planEditorCombo.addItem("");
+        for (String option : PLAN_STATUS_OPTIONS) {
+            planEditorCombo.addItem(option);
+        }
+        planTable.getColumnModel().getColumn(5).setCellEditor(new javax.swing.DefaultCellEditor(planEditorCombo));
     }
 
     private void applyGridStyle(JTable table, Color gridColor) {
@@ -489,6 +526,21 @@ public final class BakapiFrame extends JFrame {
         return username == null ? "" : username.trim().toLowerCase(Locale.ROOT);
     }
 
+    private void onSuccessfulLogin(LoadGradesResult result) {
+        clearSessionCredentials();
+        currentSessionPassword = Arrays.copyOf(result.sessionPassword(), result.sessionPassword().length);
+        currentUserProfile = result.profile();
+        currentGrades = new ArrayList<>(result.grades());
+        Arrays.fill(result.sessionPassword(), '\0');
+    }
+
+    private void clearSessionCredentials() {
+        if (currentSessionPassword != null) {
+            Arrays.fill(currentSessionPassword, '\0');
+            currentSessionPassword = null;
+        }
+    }
+
     private void showLoginView() {
         cardLayout.show(contentPanel, LOGIN_CARD);
         getRootPane().setDefaultButton(loginButton);
@@ -505,8 +557,13 @@ public final class BakapiFrame extends JFrame {
         subjectSummaryTableModel.setRowCount(0);
         subjectGradeCountsTableModel.setRowCount(0);
         resultGradeDistributionTableModel.setRowCount(0);
+        planTableModel.setRowCount(0);
+        planTableGradeIndexes.clear();
         overallAverageLabel.setText("Celkový průměr výsledných známek: -");
         statusLabel.setText("Odhlášeno.");
+        clearSessionCredentials();
+        currentGrades = List.of();
+        currentUserProfile = null;
         showLoginView();
     }
 
@@ -514,6 +571,8 @@ public final class BakapiFrame extends JFrame {
         String baseUrl = baseUrlField.getText();
         String username = getEnteredUsername();
         char[] password = passwordField.getPassword();
+        char[] workerPassword = Arrays.copyOf(password, password.length);
+        Arrays.fill(password, '\0');
 
         setLoadingState(true);
         statusLabel.setText("Přihlašuji a načítám známky...");
@@ -522,21 +581,31 @@ public final class BakapiFrame extends JFrame {
             @Override
             protected LoadGradesResult doInBackground() throws Exception {
                 try {
-                    List<GradeEntry> onlineGrades = client.fetchGrades(baseUrl, username, new String(password));
-                    UserProfile savedProfile = profileStore.saveOrUpdateProfile(baseUrl, username, password);
-                    profileStore.saveCachedGrades(savedProfile, password, onlineGrades);
-                    return new LoadGradesResult(onlineGrades, false);
+                    List<GradeEntry> onlineGrades = client.fetchGrades(baseUrl, username, new String(workerPassword));
+                    UserProfile savedProfile = profileStore.saveOrUpdateProfile(baseUrl, username, workerPassword);
+                    List<GradeEntry> mergedGrades = profileStore.saveCachedGrades(savedProfile, workerPassword, onlineGrades);
+                    return new LoadGradesResult(
+                            mergedGrades,
+                            false,
+                            savedProfile,
+                            Arrays.copyOf(workerPassword, workerPassword.length)
+                    );
                 } catch (InterruptedException e) {
                     throw e;
                 } catch (IOException | GeneralSecurityException onlineError) {
                     Optional<UserProfile> existingProfile = profileStore.findProfile(baseUrl, username);
                     if (existingProfile.isPresent()) {
-                        List<GradeEntry> cachedGrades = profileStore.loadCachedGrades(existingProfile.get(), password);
-                        return new LoadGradesResult(cachedGrades, true);
+                        List<GradeEntry> cachedGrades = profileStore.loadCachedGrades(existingProfile.get(), workerPassword);
+                        return new LoadGradesResult(
+                                cachedGrades,
+                                true,
+                                existingProfile.get(),
+                                Arrays.copyOf(workerPassword, workerPassword.length)
+                        );
                     }
                     throw onlineError;
                 } finally {
-                    Arrays.fill(password, '\0');
+                    Arrays.fill(workerPassword, '\0');
                 }
             }
 
@@ -544,6 +613,7 @@ public final class BakapiFrame extends JFrame {
             protected void done() {
                 try {
                     LoadGradesResult result = get();
+                    onSuccessfulLogin(result);
                     rebuildTables(result.grades());
                     showGradesView();
                     reloadStoredProfiles();
@@ -574,10 +644,13 @@ public final class BakapiFrame extends JFrame {
     }
 
     private void rebuildTables(List<GradeEntry> grades) {
+        currentGrades = new ArrayList<>(grades);
         gradesTableModel.setRowCount(0);
         subjectSummaryTableModel.setRowCount(0);
         subjectGradeCountsTableModel.setRowCount(0);
         resultGradeDistributionTableModel.setRowCount(0);
+        planTableModel.setRowCount(0);
+        planTableGradeIndexes.clear();
 
         List<ComputedGradeRow> computedRows = new ArrayList<>();
         Map<String, Double> subjectWeightTotals = new LinkedHashMap<>();
@@ -592,7 +665,8 @@ public final class BakapiFrame extends JFrame {
         presentGradeBuckets.put("4", "4");
         presentGradeBuckets.put("5", "5");
 
-        for (GradeEntry grade : grades) {
+        for (int gradeIndex = 0; gradeIndex < currentGrades.size(); gradeIndex++) {
+            GradeEntry grade = currentGrades.get(gradeIndex);
             Double markValue = parseMarkValue(grade.markText());
             double weightValue = parseWeight(grade.weight());
             ComputedGradeRow computed = new ComputedGradeRow(grade, markValue, weightValue);
@@ -612,6 +686,23 @@ public final class BakapiFrame extends JFrame {
                 subjectGradeCounts.get(subjectKey).merge(bucket, 1, Integer::sum);
                 subjectTotals.merge(subjectKey, 1, Integer::sum);
                 presentGradeBuckets.putIfAbsent(bucket, bucket);
+            }
+
+            if (isPlanningTarget(bucket)) {
+                updatingPlanTable = true;
+                try {
+                    planTableModel.addRow(new Object[]{
+                            grade.subject(),
+                            grade.teacher(),
+                            grade.markText(),
+                            grade.caption(),
+                            grade.date(),
+                            safePlanStatus(grade.planStatus())
+                    });
+                    planTableGradeIndexes.add(gradeIndex);
+                } finally {
+                    updatingPlanTable = false;
+                }
             }
         }
 
@@ -731,6 +822,73 @@ public final class BakapiFrame extends JFrame {
 
         configureTables();
         refreshFilterOptions();
+    }
+
+    private void onPlanTableEdited(TableModelEvent event) {
+        if (updatingPlanTable || event.getType() != TableModelEvent.UPDATE || event.getColumn() != 5) {
+            return;
+        }
+        int row = event.getFirstRow();
+        if (row < 0 || row >= planTableGradeIndexes.size()) {
+            return;
+        }
+        int gradeIndex = planTableGradeIndexes.get(row);
+        if (gradeIndex < 0 || gradeIndex >= currentGrades.size()) {
+            return;
+        }
+
+        Object rawValue = planTableModel.getValueAt(row, 5);
+        String normalizedStatus = normalizePlanStatus(rawValue == null ? "" : rawValue.toString());
+        GradeEntry grade = currentGrades.get(gradeIndex);
+        GradeEntry updatedGrade = new GradeEntry(
+                grade.sourceId(),
+                grade.subject(),
+                grade.teacher(),
+                grade.markText(),
+                grade.caption(),
+                grade.note(),
+                grade.weight(),
+                grade.date(),
+                normalizedStatus
+        );
+        currentGrades.set(gradeIndex, updatedGrade);
+
+        updatingPlanTable = true;
+        try {
+            planTableModel.setValueAt(normalizedStatus, row, 5);
+        } finally {
+            updatingPlanTable = false;
+        }
+
+        tryPersistCurrentGrades();
+    }
+
+    private void tryPersistCurrentGrades() {
+        if (currentUserProfile == null || currentSessionPassword == null) {
+            return;
+        }
+        try {
+            currentGrades = profileStore.saveCachedGrades(currentUserProfile, currentSessionPassword, currentGrades);
+        } catch (IOException | GeneralSecurityException e) {
+            statusLabel.setText("Nepodařilo se uložit lokální změnu plánu známek.");
+        }
+    }
+
+    private static boolean isPlanningTarget(String bucket) {
+        String key = bucket == null ? "" : bucket.trim().toUpperCase(Locale.ROOT);
+        return key.equals("N") || key.equals("A") || key.equals("4") || key.equals("5");
+    }
+
+    private static String normalizePlanStatus(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        if (PLAN_STATUS_OPTIONS.contains(normalized)) {
+            return normalized;
+        }
+        return "";
+    }
+
+    private static String safePlanStatus(String status) {
+        return normalizePlanStatus(status);
     }
 
     private void applyColumnFilters() {
@@ -1139,7 +1297,7 @@ public final class BakapiFrame extends JFrame {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    private record LoadGradesResult(List<GradeEntry> grades, boolean offline) {
+    private record LoadGradesResult(List<GradeEntry> grades, boolean offline, UserProfile profile, char[] sessionPassword) {
     }
 
     private record ComputedGradeRow(GradeEntry grade, Double markValue, double weightValue) {

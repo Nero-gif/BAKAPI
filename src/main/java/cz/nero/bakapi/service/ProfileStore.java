@@ -85,10 +85,6 @@ public final class ProfileStore {
         String normalizedUsername = normalizeUsername(usernameValue);
         ensurePassword(password);
 
-        byte[] passwordSalt = randomBytes(SALT_BYTES);
-        byte[] encryptionSalt = randomBytes(SALT_BYTES);
-        byte[] passwordHash = deriveKey(password, passwordSalt, HASH_ITERATIONS);
-
         long now = Instant.now().toEpochMilli();
         List<UserProfile> profiles = new ArrayList<>(loadProfiles());
         int existingIndex = findProfileIndex(profiles, normalizedBaseUrl, normalizedUsername);
@@ -96,18 +92,37 @@ public final class ProfileStore {
         UserProfile updatedProfile;
         if (existingIndex >= 0) {
             UserProfile existing = profiles.get(existingIndex);
-            updatedProfile = new UserProfile(
-                    existing.id(),
-                    normalizedBaseUrl,
-                    usernameValue,
-                    encode(passwordSalt),
-                    encode(passwordHash),
-                    encode(encryptionSalt),
-                    existing.createdAtEpochMillis(),
-                    now
-            );
+            if (isPasswordValid(existing, password)) {
+                updatedProfile = new UserProfile(
+                        existing.id(),
+                        normalizedBaseUrl,
+                        usernameValue,
+                        existing.passwordSaltBase64(),
+                        existing.passwordHashBase64(),
+                        existing.encryptionSaltBase64(),
+                        existing.createdAtEpochMillis(),
+                        now
+                );
+            } else {
+                byte[] passwordSalt = randomBytes(SALT_BYTES);
+                byte[] encryptionSalt = randomBytes(SALT_BYTES);
+                byte[] passwordHash = deriveKey(password, passwordSalt, HASH_ITERATIONS);
+                updatedProfile = new UserProfile(
+                        existing.id(),
+                        normalizedBaseUrl,
+                        usernameValue,
+                        encode(passwordSalt),
+                        encode(passwordHash),
+                        encode(encryptionSalt),
+                        existing.createdAtEpochMillis(),
+                        now
+                );
+            }
             profiles.set(existingIndex, updatedProfile);
         } else {
+            byte[] passwordSalt = randomBytes(SALT_BYTES);
+            byte[] encryptionSalt = randomBytes(SALT_BYTES);
+            byte[] passwordHash = deriveKey(password, passwordSalt, HASH_ITERATIONS);
             updatedProfile = new UserProfile(
                     UUID.randomUUID().toString(),
                     normalizedBaseUrl,
@@ -125,7 +140,7 @@ public final class ProfileStore {
         return updatedProfile;
     }
 
-    public void saveCachedGrades(UserProfile profile, char[] password, List<GradeEntry> grades)
+    public List<GradeEntry> saveCachedGrades(UserProfile profile, char[] password, List<GradeEntry> grades)
             throws IOException, GeneralSecurityException {
         Objects.requireNonNull(profile, "profile");
         ensurePassword(password);
@@ -142,6 +157,7 @@ public final class ProfileStore {
 
         EncryptedPayload payload = new EncryptedPayload(1, encode(iv), encode(cipherBytes));
         writeJsonAtomically(cacheFile, payload);
+        return mergedGrades;
     }
 
     public List<GradeEntry> loadCachedGrades(UserProfile profile, char[] password)
@@ -163,7 +179,11 @@ public final class ProfileStore {
         }
 
         byte[] key = deriveKey(password, decode(profile.encryptionSaltBase64()), ENCRYPTION_ITERATIONS);
-        return decryptGrades(payload, key);
+        try {
+            return decryptGrades(payload, key);
+        } catch (GeneralSecurityException e) {
+            throw new GeneralSecurityException("Offline známky nelze odemknout. Zkontroluj heslo.", e);
+        }
     }
 
     private boolean isPasswordValid(UserProfile profile, char[] password) throws GeneralSecurityException {
@@ -264,8 +284,12 @@ public final class ProfileStore {
             return List.copyOf(incomingGrades);
         }
 
-        List<GradeEntry> existingGrades = decryptGrades(existingPayload, key);
-        return mergeGrades(existingGrades, incomingGrades);
+        try {
+            List<GradeEntry> existingGrades = decryptGrades(existingPayload, key);
+            return mergeGrades(existingGrades, incomingGrades);
+        } catch (GeneralSecurityException e) {
+            return List.copyOf(incomingGrades);
+        }
     }
 
     private static List<GradeEntry> decryptGrades(EncryptedPayload payload, byte[] key)
@@ -292,8 +316,13 @@ public final class ProfileStore {
         for (GradeEntry grade : incoming) {
             String key = gradeIdentityKey(grade, incomingSequence);
             GradeEntry existingGrade = existingByIdentity.get(key);
-            if (existingGrade != null && gradesEqual(existingGrade, grade)) {
-                merged.add(existingGrade);
+            if (existingGrade != null) {
+                GradeEntry mergedGrade = mergeGradeFields(existingGrade, grade);
+                if (gradesEqualIncludingPlan(existingGrade, mergedGrade)) {
+                    merged.add(existingGrade);
+                } else {
+                    merged.add(mergedGrade);
+                }
             } else {
                 merged.add(grade);
             }
@@ -310,16 +339,36 @@ public final class ProfileStore {
         } else {
             baseKey = "f:"
                     + safeText(grade.subject()).toLowerCase(Locale.ROOT) + "|"
+                    + safeText(grade.markText()).toLowerCase(Locale.ROOT) + "|"
+                    + safeText(grade.weight()).toLowerCase(Locale.ROOT) + "|"
                     + safeText(grade.caption()).toLowerCase(Locale.ROOT) + "|"
-                    + safeText(grade.date()).toLowerCase(Locale.ROOT) + "|"
-                    + safeText(grade.teacher()).toLowerCase(Locale.ROOT);
+                    + safeText(grade.date()).toLowerCase(Locale.ROOT);
         }
 
         int sequence = sequenceMap.merge(baseKey, 1, Integer::sum);
         return baseKey + "#" + sequence;
     }
 
-    private static boolean gradesEqual(GradeEntry left, GradeEntry right) {
+    private static GradeEntry mergeGradeFields(GradeEntry existing, GradeEntry incoming) {
+        String mergedPlanStatus = safeText(incoming.planStatus());
+        if (mergedPlanStatus.isBlank()) {
+            mergedPlanStatus = safeText(existing.planStatus());
+        }
+
+        return new GradeEntry(
+                incoming.sourceId(),
+                incoming.subject(),
+                incoming.teacher(),
+                incoming.markText(),
+                incoming.caption(),
+                incoming.note(),
+                incoming.weight(),
+                incoming.date(),
+                mergedPlanStatus
+        );
+    }
+
+    private static boolean gradesEqualIncludingPlan(GradeEntry left, GradeEntry right) {
         return Objects.equals(left.sourceId(), right.sourceId())
                 && Objects.equals(left.subject(), right.subject())
                 && Objects.equals(left.teacher(), right.teacher())
@@ -327,7 +376,8 @@ public final class ProfileStore {
                 && Objects.equals(left.caption(), right.caption())
                 && Objects.equals(left.note(), right.note())
                 && Objects.equals(left.weight(), right.weight())
-                && Objects.equals(left.date(), right.date());
+                && Objects.equals(left.date(), right.date())
+                && Objects.equals(safeText(left.planStatus()), safeText(right.planStatus()));
     }
 
     private static String safeText(String value) {

@@ -17,6 +17,7 @@ Po spuštění se nejdřív zobrazí jen přihlašovací obrazovka. Přehled zn�
 - Aplikace si pamatuje přihlášené profily (URL + uživatel) a nabízí je v rozbalovacím seznamu uživatele.
 - Po úspěšném online načtení se známky uloží do lokálního šifrovaného cache.
 - Při dalším online načtení se cache aktualizuje po jednotlivých známkách (nezměněné záznamy se zachovají).
+- Lokální metadata známek (např. stav plánu doplnění) se při online synchronizaci zachovávají.
 - Při výpadku internetu se známky načtou z cache jen po zadání správného hesla k danému účtu.
 - Heslo se nikam neukládá v plaintextu; ukládá se pouze hash hesla a šifrovaná data.
 
@@ -31,6 +32,7 @@ Tabulka známek a tabulka průměrů jsou oddělené do záložek (`Známky` / `
 Další statistiky:
 - záložka `Statistika známek`: počty jednotlivých známek (1–5) pro každý předmět,
 - v záložce `Průměry předmětů`: rozložení výsledných známek (kolik předmětů vychází na 1, 2, 3, 4, 5).
+- záložka `Známky k doplnění`: zobrazuje známky `N`, `A`, `4`, `5` a umožní uložit stav plánu (`nelze`, `je v plánu`, `neni v plánu`, `mohl bych`).
 
 Tabulka statistiky známek používá dynamické sloupce podle reálně nalezených známek (např. `N`). Známky typu `1-` se započítávají do sloupce `1`.
 

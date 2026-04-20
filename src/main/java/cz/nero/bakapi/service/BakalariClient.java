@@ -154,7 +154,7 @@ public final class BakalariClient {
             String weight = textOrDefault(data.get("vaha"), "");
             String note = cleanNote(textOrDefault(data.get("poznamkakzobrazeni"), ""));
 
-            grades.add(new GradeEntry(sourceId, subject, teacher, markText, caption, note, weight, date));
+            grades.add(new GradeEntry(sourceId, subject, teacher, markText, caption, note, weight, date, ""));
         }
 
         return List.copyOf(grades);
