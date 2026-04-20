@@ -32,7 +32,9 @@ Tabulka známek a tabulka průměrů jsou oddělené do záložek (`Známky` / `
 Další statistiky:
 - záložka `Statistika známek`: počty jednotlivých známek (1–5) pro každý předmět,
 - v záložce `Průměry předmětů`: rozložení výsledných známek (kolik předmětů vychází na 1, 2, 3, 4, 5).
-- záložka `Známky k doplnění`: zobrazuje známky `N`, `A`, `4`, `5` a umožní uložit stav plánu (`nelze`, `je v plánu`, `neni v plánu`, `mohl bych`).
+- záložka `Známky k doplnění`: zobrazuje známky `N`, `A`, `4`, `5` a umožní uložit stav plánu (`Nerealizovatelné`, `Plánováno`, `Neplánováno`, `K zvážení`).
+- tlačítko `Nahrát konzultace (PDF)`: načte PDF s konzultačními hodinami vyučujících, automaticky je spáruje s učiteli u známek a zobrazí je v záložce `Známky k doplnění`.
+  Načtená data se uloží k profilu a při dalším přihlášení se načtou automaticky; nahrání nového PDF původní uložené konzultace přepíše.
 
 Tabulka statistiky známek používá dynamické sloupce podle reálně nalezených známek (např. `N`). Známky typu `1-` se započítávají do sloupce `1`.
 

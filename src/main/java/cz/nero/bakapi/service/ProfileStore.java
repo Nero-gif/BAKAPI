@@ -34,6 +34,8 @@ public final class ProfileStore {
     };
     private static final TypeReference<List<GradeEntry>> GRADE_LIST_TYPE = new TypeReference<>() {
     };
+    private static final TypeReference<List<ConsultationHoursService.ConsultationHours>> CONSULTATION_LIST_TYPE = new TypeReference<>() {
+    };
 
     private static final int HASH_ITERATIONS = 180_000;
     private static final int ENCRYPTION_ITERATIONS = 240_000;
@@ -183,6 +185,58 @@ public final class ProfileStore {
             return decryptGrades(payload, key);
         } catch (GeneralSecurityException e) {
             throw new GeneralSecurityException("Offline známky nelze odemknout. Zkontroluj heslo.", e);
+        }
+    }
+
+    public void saveConsultationHours(
+            UserProfile profile,
+            char[] password,
+            List<ConsultationHoursService.ConsultationHours> consultationHours
+    ) throws IOException, GeneralSecurityException {
+        Objects.requireNonNull(profile, "profile");
+        ensurePassword(password);
+        if (!isPasswordValid(profile, password)) {
+            throw new GeneralSecurityException("Neplatné heslo pro vybraný profil.");
+        }
+
+        List<ConsultationHoursService.ConsultationHours> safeList =
+                consultationHours == null ? List.of() : List.copyOf(consultationHours);
+        byte[] key = deriveKey(password, decode(profile.encryptionSaltBase64()), ENCRYPTION_ITERATIONS);
+        Path consultationsFile = cacheDir.resolve(profile.id() + ".consultations.enc");
+        byte[] iv = randomBytes(GCM_IV_BYTES);
+        byte[] plainBytes = OBJECT_MAPPER.writeValueAsBytes(safeList);
+        byte[] cipherBytes = encrypt(plainBytes, key, iv);
+
+        EncryptedPayload payload = new EncryptedPayload(1, encode(iv), encode(cipherBytes));
+        writeJsonAtomically(consultationsFile, payload);
+    }
+
+    public List<ConsultationHoursService.ConsultationHours> loadConsultationHours(UserProfile profile, char[] password)
+            throws IOException, GeneralSecurityException {
+        Objects.requireNonNull(profile, "profile");
+        ensurePassword(password);
+        if (!isPasswordValid(profile, password)) {
+            throw new GeneralSecurityException("Heslo k účtu není platné.");
+        }
+
+        Path consultationsFile = cacheDir.resolve(profile.id() + ".consultations.enc");
+        if (!Files.exists(consultationsFile)) {
+            return List.of();
+        }
+
+        EncryptedPayload payload = OBJECT_MAPPER.readValue(consultationsFile.toFile(), EncryptedPayload.class);
+        if (payload == null || payload.iv() == null || payload.ciphertext() == null) {
+            return List.of();
+        }
+
+        byte[] key = deriveKey(password, decode(profile.encryptionSaltBase64()), ENCRYPTION_ITERATIONS);
+        try {
+            byte[] plainBytes = decrypt(decode(payload.ciphertext()), key, decode(payload.iv()));
+            List<ConsultationHoursService.ConsultationHours> consultations =
+                    OBJECT_MAPPER.readValue(plainBytes, CONSULTATION_LIST_TYPE);
+            return consultations == null ? List.of() : List.copyOf(consultations);
+        } catch (GeneralSecurityException e) {
+            throw new GeneralSecurityException("Konzultační hodiny nelze odemknout. Zkontroluj heslo.", e);
         }
     }
 

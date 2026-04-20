@@ -5,6 +5,7 @@ import com.formdev.flatlaf.FlatLightLaf;
 import cz.nero.bakapi.model.GradeEntry;
 import cz.nero.bakapi.model.UserProfile;
 import cz.nero.bakapi.service.BakalariClient;
+import cz.nero.bakapi.service.ConsultationHoursService;
 import cz.nero.bakapi.service.ProfileStore;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -18,6 +19,7 @@ import java.awt.GridBagLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Toolkit;
+import java.io.File;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
@@ -59,6 +61,8 @@ import javax.swing.event.TableModelEvent;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableRowSorter;
+import javax.swing.JFileChooser;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 public final class BakapiFrame extends JFrame {
     private enum ThemeMode {
@@ -71,7 +75,14 @@ public final class BakapiFrame extends JFrame {
     private static final Pattern SINGLE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*([+-]?)$");
     private static final Pattern RANGE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*[-–]\\s*([1-5])$");
     private static final Pattern LEADING_NUMERIC_MARK_PATTERN = Pattern.compile("^\\s*([1-5])");
-    private static final List<String> PLAN_STATUS_OPTIONS = List.of("nelze", "je v plánu", "neni v plánu", "mohl bych");
+    private static final int[] GRADE_FILTER_COLUMNS = {0, 2, 3};
+    private static final int[] PLAN_FILTER_COLUMNS = {0, 2, 5, 6};
+    private static final List<String> PLAN_STATUS_OPTIONS = List.of(
+            "Nerealizovatelné",
+            "Plánováno",
+            "Neplánováno",
+            "K zvážení"
+    );
 
     private ThemeMode currentTheme;
     private boolean applyingTheme;
@@ -82,6 +93,7 @@ public final class BakapiFrame extends JFrame {
     private final JPasswordField passwordField = new JPasswordField(getEnvOrDefault("BAKA_PASS", ""), 20);
     private final JButton loginButton = new JButton("Přihlásit a načíst známky");
     private final JButton refreshButton = new JButton("Obnovit");
+    private final JButton importConsultationsButton = new JButton("Nahrát konzultace (PDF)");
     private final JButton logoutButton = new JButton("Odhlásit");
     private final JToggleButton themeToggle = new JToggleButton();
     private final JLabel statusLabel = new JLabel("Připraveno");
@@ -129,23 +141,29 @@ public final class BakapiFrame extends JFrame {
     private final JTable resultGradeDistributionTable = new JTable(resultGradeDistributionTableModel);
 
     private final DefaultTableModel planTableModel = new DefaultTableModel(
-            new Object[]{"Předmět", "Učitel", "Známka", "Téma", "Datum", "Plán doplnění"}, 0) {
+            new Object[]{"Předmět", "Učitel", "Známka", "Téma", "Datum", "Konzultace", "Plán doplnění"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
-            return column == 5;
+            return column == 6;
         }
     };
     private final JTable planTable = new JTable(planTableModel);
+    private final TableRowSorter<DefaultTableModel> planSorter = new TableRowSorter<>(planTableModel);
+    @SuppressWarnings("unchecked")
+    private final JComboBox<String>[] planFilterCombos = new JComboBox[planTableModel.getColumnCount()];
     private final List<Integer> planTableGradeIndexes = new ArrayList<>();
     private boolean updatingPlanTable;
+    private boolean updatingPlanFilterOptions;
 
     private final Map<String, Color> subjectColorCache = new LinkedHashMap<>();
 
     private final CardLayout cardLayout = new CardLayout();
     private final JPanel contentPanel = new JPanel(cardLayout);
     private final BakalariClient client = new BakalariClient();
+    private final ConsultationHoursService consultationHoursService = new ConsultationHoursService();
     private final ProfileStore profileStore = new ProfileStore();
     private final Map<String, UserProfile> profilesByUsername = new LinkedHashMap<>();
+    private List<ConsultationHoursService.ConsultationHours> consultationHours = List.of();
     private List<GradeEntry> currentGrades = List.of();
     private UserProfile currentUserProfile;
     private char[] currentSessionPassword;
@@ -175,6 +193,7 @@ public final class BakapiFrame extends JFrame {
 
         loginButton.addActionListener(event -> loadGrades());
         refreshButton.addActionListener(event -> loadGrades());
+        importConsultationsButton.addActionListener(event -> importConsultationHoursPdf());
         logoutButton.addActionListener(event -> logout());
         baseUrlField.addActionListener(event -> loadGrades());
         getUsernameEditorField().addActionListener(event -> loadGrades());
@@ -201,8 +220,11 @@ public final class BakapiFrame extends JFrame {
         JLabel titleLabel = new JLabel("BAKAPI");
         titleLabel.putClientProperty("FlatLaf.styleClass", "h1");
 
-        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
         rightPanel.setOpaque(false);
+        rightPanel.add(refreshButton);
+        rightPanel.add(importConsultationsButton);
+        rightPanel.add(logoutButton);
         themeToggle.setToolTipText("Přepnout světlý/tmavý motiv");
         rightPanel.add(themeToggle);
 
@@ -269,13 +291,6 @@ public final class BakapiFrame extends JFrame {
                 BorderFactory.createEmptyBorder(8, 8, 8, 8)
         ));
 
-        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        actions.setOpaque(false);
-        actions.add(refreshButton);
-        actions.add(logoutButton);
-
-        panel.add(actions, BorderLayout.NORTH);
-
         JPanel gradesTab = new JPanel(new BorderLayout(0, 10));
         gradesTab.add(createFilterPanel(), BorderLayout.NORTH);
         gradesTab.add(new JScrollPane(gradesTable), BorderLayout.CENTER);
@@ -296,6 +311,7 @@ public final class BakapiFrame extends JFrame {
         subjectCountsTab.add(new JScrollPane(subjectGradeCountsTable), BorderLayout.CENTER);
 
         JPanel planTab = new JPanel(new BorderLayout(0, 8));
+        planTab.add(createPlanFilterPanel(), BorderLayout.NORTH);
         planTab.add(new JScrollPane(planTable), BorderLayout.CENTER);
 
         JTabbedPane tabs = new JTabbedPane();
@@ -312,7 +328,7 @@ public final class BakapiFrame extends JFrame {
         JPanel panel = new JPanel(new GridLayout(0, 4, 8, 8));
         panel.setBorder(BorderFactory.createTitledBorder("Filtry sloupců"));
 
-        for (int column = 0; column < gradesTableModel.getColumnCount(); column++) {
+        for (int column : GRADE_FILTER_COLUMNS) {
             JPanel oneFilterPanel = new JPanel(new BorderLayout(0, 4));
             oneFilterPanel.setOpaque(false);
 
@@ -325,6 +341,32 @@ public final class BakapiFrame extends JFrame {
             editor.putClientProperty("JTextField.placeholderText", "Vyber nebo napiš...");
             editor.getDocument().addDocumentListener(new FilterChangeListener());
             filterCombos[column] = combo;
+
+            oneFilterPanel.add(columnLabel, BorderLayout.NORTH);
+            oneFilterPanel.add(combo, BorderLayout.CENTER);
+            panel.add(oneFilterPanel);
+        }
+
+        return panel;
+    }
+
+    private JPanel createPlanFilterPanel() {
+        JPanel panel = new JPanel(new GridLayout(0, 4, 8, 8));
+        panel.setBorder(BorderFactory.createTitledBorder("Filtry sloupců"));
+
+        for (int column : PLAN_FILTER_COLUMNS) {
+            JPanel oneFilterPanel = new JPanel(new BorderLayout(0, 4));
+            oneFilterPanel.setOpaque(false);
+
+            JLabel columnLabel = new JLabel(planTableModel.getColumnName(column));
+            JComboBox<String> combo = new JComboBox<>();
+            combo.setEditable(true);
+            combo.setModel(new DefaultComboBoxModel<>(new String[]{""}));
+            combo.addActionListener(event -> applyPlanFilters());
+            JTextField editor = (JTextField) combo.getEditor().getEditorComponent();
+            editor.putClientProperty("JTextField.placeholderText", "Vyber nebo napiš...");
+            editor.getDocument().addDocumentListener(new PlanFilterChangeListener());
+            planFilterCombos[column] = combo;
 
             oneFilterPanel.add(columnLabel, BorderLayout.NORTH);
             oneFilterPanel.add(combo, BorderLayout.CENTER);
@@ -392,6 +434,8 @@ public final class BakapiFrame extends JFrame {
         }
 
         planTable.setFillsViewportHeight(true);
+        planTable.setRowSorter(planSorter);
+        planTable.setAutoCreateRowSorter(false);
         planTable.setRowHeight(30);
         planTable.getTableHeader().setReorderingAllowed(false);
         applyGridStyle(planTable, gridColor);
@@ -405,7 +449,7 @@ public final class BakapiFrame extends JFrame {
         for (String option : PLAN_STATUS_OPTIONS) {
             planEditorCombo.addItem(option);
         }
-        planTable.getColumnModel().getColumn(5).setCellEditor(new javax.swing.DefaultCellEditor(planEditorCombo));
+        planTable.getColumnModel().getColumn(6).setCellEditor(new javax.swing.DefaultCellEditor(planEditorCombo));
     }
 
     private void applyGridStyle(JTable table, Color gridColor) {
@@ -440,10 +484,16 @@ public final class BakapiFrame extends JFrame {
 
         loginButton.putClientProperty("JButton.buttonType", "roundRect");
         refreshButton.putClientProperty("JButton.buttonType", "roundRect");
+        importConsultationsButton.putClientProperty("JButton.buttonType", "roundRect");
         logoutButton.putClientProperty("JButton.buttonType", "roundRect");
         themeToggle.putClientProperty("JButton.buttonType", "roundRect");
 
         for (JComboBox<String> combo : filterCombos) {
+            if (combo != null) {
+                combo.putClientProperty("JComponent.roundRect", true);
+            }
+        }
+        for (JComboBox<String> combo : planFilterCombos) {
             if (combo != null) {
                 combo.putClientProperty("JComponent.roundRect", true);
             }
@@ -530,6 +580,7 @@ public final class BakapiFrame extends JFrame {
         clearSessionCredentials();
         currentSessionPassword = Arrays.copyOf(result.sessionPassword(), result.sessionPassword().length);
         currentUserProfile = result.profile();
+        consultationHours = new ArrayList<>(result.consultationHours());
         currentGrades = new ArrayList<>(result.grades());
         Arrays.fill(result.sessionPassword(), '\0');
     }
@@ -543,11 +594,17 @@ public final class BakapiFrame extends JFrame {
 
     private void showLoginView() {
         cardLayout.show(contentPanel, LOGIN_CARD);
+        refreshButton.setVisible(false);
+        importConsultationsButton.setVisible(false);
+        logoutButton.setVisible(false);
         getRootPane().setDefaultButton(loginButton);
     }
 
     private void showGradesView() {
         cardLayout.show(contentPanel, GRADES_CARD);
+        refreshButton.setVisible(true);
+        importConsultationsButton.setVisible(true);
+        logoutButton.setVisible(true);
         getRootPane().setDefaultButton(refreshButton);
     }
 
@@ -564,7 +621,68 @@ public final class BakapiFrame extends JFrame {
         clearSessionCredentials();
         currentGrades = List.of();
         currentUserProfile = null;
+        consultationHours = List.of();
         showLoginView();
+    }
+
+    private void importConsultationHoursPdf() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Vyber PDF s konzultačními hodinami");
+        chooser.setFileFilter(new FileNameExtensionFilter("PDF dokument (*.pdf)", "pdf"));
+        int result = chooser.showOpenDialog(this);
+        if (result != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File selectedFile = chooser.getSelectedFile();
+        if (selectedFile == null) {
+            return;
+        }
+
+        setLoadingState(true);
+        statusLabel.setText("Načítám konzultační hodiny z PDF...");
+
+        SwingWorker<List<ConsultationHoursService.ConsultationHours>, Void> worker = new SwingWorker<>() {
+            @Override
+            protected List<ConsultationHoursService.ConsultationHours> doInBackground() throws Exception {
+                return consultationHoursService.loadFromPdf(selectedFile.toPath());
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    consultationHours = get();
+                    boolean saveFailed = false;
+                    if (currentUserProfile != null && currentSessionPassword != null) {
+                        try {
+                            profileStore.saveConsultationHours(currentUserProfile, currentSessionPassword, consultationHours);
+                        } catch (IOException | GeneralSecurityException e) {
+                            saveFailed = true;
+                            showError("Konzultace se nepodařilo uložit do lokálního profilu.");
+                        }
+                    }
+                    if (!currentGrades.isEmpty()) {
+                        rebuildTables(currentGrades);
+                    }
+                    int mapped = countPlanningRowsWithConsultation();
+                    String baseMessage = "Načteny konzultace pro " + consultationHours.size()
+                            + " vyučujících, spárováno " + mapped + " známek k doplnění.";
+                    statusLabel.setText(saveFailed ? baseMessage + " Uložení do profilu selhalo." : baseMessage);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    statusLabel.setText("Načítání PDF bylo přerušeno.");
+                    showError("Načítání PDF bylo přerušeno.");
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause();
+                    String message = cause != null ? cause.getMessage() : "Neznámá chyba při čtení PDF.";
+                    statusLabel.setText("Načítání konzultací selhalo.");
+                    showError(message);
+                } finally {
+                    setLoadingState(false);
+                }
+            }
+        };
+
+        worker.execute();
     }
 
     private void loadGrades() {
@@ -584,8 +702,15 @@ public final class BakapiFrame extends JFrame {
                     List<GradeEntry> onlineGrades = client.fetchGrades(baseUrl, username, new String(workerPassword));
                     UserProfile savedProfile = profileStore.saveOrUpdateProfile(baseUrl, username, workerPassword);
                     List<GradeEntry> mergedGrades = profileStore.saveCachedGrades(savedProfile, workerPassword, onlineGrades);
+                    List<ConsultationHoursService.ConsultationHours> storedConsultations;
+                    try {
+                        storedConsultations = profileStore.loadConsultationHours(savedProfile, workerPassword);
+                    } catch (IOException | GeneralSecurityException e) {
+                        storedConsultations = List.of();
+                    }
                     return new LoadGradesResult(
                             mergedGrades,
+                            storedConsultations,
                             false,
                             savedProfile,
                             Arrays.copyOf(workerPassword, workerPassword.length)
@@ -596,8 +721,15 @@ public final class BakapiFrame extends JFrame {
                     Optional<UserProfile> existingProfile = profileStore.findProfile(baseUrl, username);
                     if (existingProfile.isPresent()) {
                         List<GradeEntry> cachedGrades = profileStore.loadCachedGrades(existingProfile.get(), workerPassword);
+                        List<ConsultationHoursService.ConsultationHours> storedConsultations;
+                        try {
+                            storedConsultations = profileStore.loadConsultationHours(existingProfile.get(), workerPassword);
+                        } catch (IOException | GeneralSecurityException e) {
+                            storedConsultations = List.of();
+                        }
                         return new LoadGradesResult(
                                 cachedGrades,
+                                storedConsultations,
                                 true,
                                 existingProfile.get(),
                                 Arrays.copyOf(workerPassword, workerPassword.length)
@@ -659,6 +791,7 @@ public final class BakapiFrame extends JFrame {
         Map<String, Map<String, Integer>> subjectGradeCounts = new LinkedHashMap<>();
         Map<String, Integer> subjectTotals = new LinkedHashMap<>();
         Map<String, String> presentGradeBuckets = new LinkedHashMap<>();
+        Map<String, String> consultationTextByTeacher = new LinkedHashMap<>();
         presentGradeBuckets.put("1", "1");
         presentGradeBuckets.put("2", "2");
         presentGradeBuckets.put("3", "3");
@@ -689,6 +822,11 @@ public final class BakapiFrame extends JFrame {
             }
 
             if (isPlanningTarget(bucket)) {
+                String teacherName = grade.teacher() == null ? "" : grade.teacher().trim();
+                String consultationText = consultationTextByTeacher.computeIfAbsent(
+                        teacherName,
+                        key -> consultationHoursService.findConsultationForTeacher(key, consultationHours)
+                );
                 updatingPlanTable = true;
                 try {
                     planTableModel.addRow(new Object[]{
@@ -697,6 +835,7 @@ public final class BakapiFrame extends JFrame {
                             grade.markText(),
                             grade.caption(),
                             grade.date(),
+                            consultationText,
                             safePlanStatus(grade.planStatus())
                     });
                     planTableGradeIndexes.add(gradeIndex);
@@ -822,10 +961,11 @@ public final class BakapiFrame extends JFrame {
 
         configureTables();
         refreshFilterOptions();
+        refreshPlanFilterOptions();
     }
 
     private void onPlanTableEdited(TableModelEvent event) {
-        if (updatingPlanTable || event.getType() != TableModelEvent.UPDATE || event.getColumn() != 5) {
+        if (updatingPlanTable || event.getType() != TableModelEvent.UPDATE || event.getColumn() != 6) {
             return;
         }
         int row = event.getFirstRow();
@@ -837,7 +977,7 @@ public final class BakapiFrame extends JFrame {
             return;
         }
 
-        Object rawValue = planTableModel.getValueAt(row, 5);
+        Object rawValue = planTableModel.getValueAt(row, 6);
         String normalizedStatus = normalizePlanStatus(rawValue == null ? "" : rawValue.toString());
         GradeEntry grade = currentGrades.get(gradeIndex);
         GradeEntry updatedGrade = new GradeEntry(
@@ -855,7 +995,7 @@ public final class BakapiFrame extends JFrame {
 
         updatingPlanTable = true;
         try {
-            planTableModel.setValueAt(normalizedStatus, row, 5);
+            planTableModel.setValueAt(normalizedStatus, row, 6);
         } finally {
             updatingPlanTable = false;
         }
@@ -874,6 +1014,24 @@ public final class BakapiFrame extends JFrame {
         }
     }
 
+    private int countPlanningRowsWithConsultation() {
+        if (currentGrades.isEmpty() || consultationHours.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (GradeEntry grade : currentGrades) {
+            String bucket = resolveGradeBucket(grade.markText(), parseMarkValue(grade.markText()));
+            if (!isPlanningTarget(bucket)) {
+                continue;
+            }
+            String consultation = consultationHoursService.findConsultationForTeacher(grade.teacher(), consultationHours);
+            if (!consultation.isBlank()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private static boolean isPlanningTarget(String bucket) {
         String key = bucket == null ? "" : bucket.trim().toUpperCase(Locale.ROOT);
         return key.equals("N") || key.equals("A") || key.equals("4") || key.equals("5");
@@ -881,10 +1039,15 @@ public final class BakapiFrame extends JFrame {
 
     private static String normalizePlanStatus(String value) {
         String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-        if (PLAN_STATUS_OPTIONS.contains(normalized)) {
-            return normalized;
-        }
-        return "";
+        return switch (normalized) {
+            case "nerealizovatelné", "nerealizovatelne", "nelze" -> "Nerealizovatelné";
+            case "plánováno", "planovano", "je v plánu", "je v planu" -> "Plánováno";
+            case "neplánováno", "neplanovano", "neni v plánu", "neni v planu", "není v plánu", "není v planu" ->
+                    "Neplánováno";
+            case "k zvážení", "k zvažení", "k zvazeni", "mohl bych" -> "K zvážení";
+            case "" -> "";
+            default -> "";
+        };
     }
 
     private static String safePlanStatus(String status) {
@@ -962,12 +1125,96 @@ public final class BakapiFrame extends JFrame {
         }
     }
 
+    private void applyPlanFilters() {
+        if (updatingPlanFilterOptions) {
+            return;
+        }
+
+        boolean hasFilter = false;
+        for (int column = 0; column < planFilterCombos.length; column++) {
+            String filterText = getPlanFilterText(column);
+            if (!filterText.isEmpty()) {
+                hasFilter = true;
+                break;
+            }
+        }
+
+        if (!hasFilter) {
+            planSorter.setRowFilter(null);
+            return;
+        }
+
+        planSorter.setRowFilter(new RowFilter<>() {
+            @Override
+            public boolean include(Entry<? extends DefaultTableModel, ? extends Integer> entry) {
+                for (int column = 0; column < planFilterCombos.length; column++) {
+                    String filterText = getPlanFilterText(column);
+                    if (filterText.isEmpty()) {
+                        continue;
+                    }
+                    Object value = entry.getValue(column);
+                    String cellValue = value == null ? "" : value.toString().toLowerCase(Locale.ROOT);
+                    if (!cellValue.contains(filterText)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        });
+    }
+
+    private void refreshPlanFilterOptions() {
+        updatingPlanFilterOptions = true;
+        try {
+            for (int column = 0; column < planFilterCombos.length; column++) {
+                JComboBox<String> combo = planFilterCombos[column];
+                if (combo == null) {
+                    continue;
+                }
+
+                String currentText = getPlanFilterTextRaw(column);
+                Map<String, String> uniqueValues = new LinkedHashMap<>();
+                for (int row = 0; row < planTableModel.getRowCount(); row++) {
+                    Object value = planTableModel.getValueAt(row, column);
+                    String text = value == null ? "" : value.toString().trim();
+                    if (!text.isEmpty()) {
+                        uniqueValues.putIfAbsent(text.toLowerCase(Locale.ROOT), text);
+                    }
+                }
+
+                DefaultComboBoxModel<String> model = new DefaultComboBoxModel<>();
+                model.addElement("");
+                for (String value : uniqueValues.values()) {
+                    model.addElement(value);
+                }
+                combo.setModel(model);
+                combo.setEditable(true);
+                combo.getEditor().setItem(currentText);
+            }
+        } finally {
+            updatingPlanFilterOptions = false;
+        }
+    }
+
     private String getFilterText(int column) {
         return getFilterTextRaw(column).toLowerCase(Locale.ROOT);
     }
 
     private String getFilterTextRaw(int column) {
         JComboBox<String> combo = filterCombos[column];
+        if (combo == null) {
+            return "";
+        }
+        Object item = combo.getEditor().getItem();
+        return item == null ? "" : item.toString().trim();
+    }
+
+    private String getPlanFilterText(int column) {
+        return getPlanFilterTextRaw(column).toLowerCase(Locale.ROOT);
+    }
+
+    private String getPlanFilterTextRaw(int column) {
+        JComboBox<String> combo = planFilterCombos[column];
         if (combo == null) {
             return "";
         }
@@ -988,11 +1235,25 @@ public final class BakapiFrame extends JFrame {
             updatingFilterOptions = false;
         }
         gradesSorter.setRowFilter(null);
+
+        updatingPlanFilterOptions = true;
+        try {
+            for (JComboBox<String> combo : planFilterCombos) {
+                if (combo != null) {
+                    combo.setSelectedItem("");
+                    combo.getEditor().setItem("");
+                }
+            }
+        } finally {
+            updatingPlanFilterOptions = false;
+        }
+        planSorter.setRowFilter(null);
     }
 
     private void setLoadingState(boolean loading) {
         loginButton.setEnabled(!loading);
         refreshButton.setEnabled(!loading);
+        importConsultationsButton.setEnabled(!loading);
         logoutButton.setEnabled(!loading);
         themeToggle.setEnabled(!loading);
         progressBar.setVisible(loading);
@@ -1297,7 +1558,13 @@ public final class BakapiFrame extends JFrame {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    private record LoadGradesResult(List<GradeEntry> grades, boolean offline, UserProfile profile, char[] sessionPassword) {
+    private record LoadGradesResult(
+            List<GradeEntry> grades,
+            List<ConsultationHoursService.ConsultationHours> consultationHours,
+            boolean offline,
+            UserProfile profile,
+            char[] sessionPassword
+    ) {
     }
 
     private record ComputedGradeRow(GradeEntry grade, Double markValue, double weightValue) {
@@ -1335,6 +1602,23 @@ public final class BakapiFrame extends JFrame {
         @Override
         public void changedUpdate(DocumentEvent e) {
             applyColumnFilters();
+        }
+    }
+
+    private final class PlanFilterChangeListener implements DocumentListener {
+        @Override
+        public void insertUpdate(DocumentEvent e) {
+            applyPlanFilters();
+        }
+
+        @Override
+        public void removeUpdate(DocumentEvent e) {
+            applyPlanFilters();
+        }
+
+        @Override
+        public void changedUpdate(DocumentEvent e) {
+            applyPlanFilters();
         }
     }
 }
