@@ -52,6 +52,7 @@ import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
+import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.DocumentEvent;
@@ -75,6 +76,8 @@ public final class BakapiFrame extends JFrame {
     private static final Pattern SINGLE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*([+-]?)$");
     private static final Pattern RANGE_MARK_PATTERN = Pattern.compile("^([1-5])\\s*[-–]\\s*([1-5])$");
     private static final Pattern LEADING_NUMERIC_MARK_PATTERN = Pattern.compile("^\\s*([1-5])");
+    private static final int FILTER_DEBOUNCE_MS = 180;
+    private static final int PERSIST_DEBOUNCE_MS = 700;
     private static final int[] GRADE_FILTER_COLUMNS = {0, 2, 3};
     private static final int[] PLAN_FILTER_COLUMNS = {0, 2, 5, 6};
     private static final List<String> PLAN_STATUS_OPTIONS = List.of(
@@ -154,6 +157,11 @@ public final class BakapiFrame extends JFrame {
     private final List<Integer> planTableGradeIndexes = new ArrayList<>();
     private boolean updatingPlanTable;
     private boolean updatingPlanFilterOptions;
+    private final Timer gradesFilterDebounceTimer;
+    private final Timer planFilterDebounceTimer;
+    private final Timer persistGradesDebounceTimer;
+    private boolean persistInProgress;
+    private boolean persistRequestedWhileBusy;
 
     private final Map<String, Color> subjectColorCache = new LinkedHashMap<>();
 
@@ -172,6 +180,12 @@ public final class BakapiFrame extends JFrame {
         super("BAKAPI - Přehled známek");
         currentTheme = detectSystemTheme();
         applyTheme(currentTheme);
+        gradesFilterDebounceTimer = new Timer(FILTER_DEBOUNCE_MS, event -> applyColumnFilters());
+        gradesFilterDebounceTimer.setRepeats(false);
+        planFilterDebounceTimer = new Timer(FILTER_DEBOUNCE_MS, event -> applyPlanFilters());
+        planFilterDebounceTimer.setRepeats(false);
+        persistGradesDebounceTimer = new Timer(PERSIST_DEBOUNCE_MS, event -> startPersistCurrentGradesWorker());
+        persistGradesDebounceTimer.setRepeats(false);
 
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(1180, 760);
@@ -449,7 +463,25 @@ public final class BakapiFrame extends JFrame {
         for (String option : PLAN_STATUS_OPTIONS) {
             planEditorCombo.addItem(option);
         }
-        planTable.getColumnModel().getColumn(6).setCellEditor(new javax.swing.DefaultCellEditor(planEditorCombo));
+        planEditorCombo.setEditable(false);
+        javax.swing.DefaultCellEditor planEditor = new javax.swing.DefaultCellEditor(planEditorCombo);
+        planEditor.setClickCountToStart(1);
+        planEditorCombo.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
+            @Override
+            public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent event) {
+            }
+
+            @Override
+            public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent event) {
+                commitPlanEditorIfActive();
+            }
+
+            @Override
+            public void popupMenuCanceled(javax.swing.event.PopupMenuEvent event) {
+                commitPlanEditorIfActive();
+            }
+        });
+        planTable.getColumnModel().getColumn(6).setCellEditor(planEditor);
     }
 
     private void applyGridStyle(JTable table, Color gridColor) {
@@ -462,7 +494,16 @@ public final class BakapiFrame extends JFrame {
         table.setColumnSelectionAllowed(true);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.getColumnModel().getSelectionModel().setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         installCrossHighlightRepaint(table);
+    }
+
+    private void commitPlanEditorIfActive() {
+        SwingUtilities.invokeLater(() -> {
+            if (planTable.isEditing() && planTable.getEditingColumn() == 6) {
+                planTable.getCellEditor().stopCellEditing();
+            }
+        });
     }
 
     private void installCrossHighlightRepaint(JTable table) {
@@ -594,6 +635,9 @@ public final class BakapiFrame extends JFrame {
 
     private void showLoginView() {
         cardLayout.show(contentPanel, LOGIN_CARD);
+        gradesFilterDebounceTimer.stop();
+        planFilterDebounceTimer.stop();
+        persistGradesDebounceTimer.stop();
         refreshButton.setVisible(false);
         importConsultationsButton.setVisible(false);
         logoutButton.setVisible(false);
@@ -609,6 +653,8 @@ public final class BakapiFrame extends JFrame {
     }
 
     private void logout() {
+        persistGradesDebounceTimer.stop();
+        startPersistCurrentGradesWorker();
         clearFilters();
         gradesTableModel.setRowCount(0);
         subjectSummaryTableModel.setRowCount(0);
@@ -1007,11 +1053,54 @@ public final class BakapiFrame extends JFrame {
         if (currentUserProfile == null || currentSessionPassword == null) {
             return;
         }
-        try {
-            currentGrades = profileStore.saveCachedGrades(currentUserProfile, currentSessionPassword, currentGrades);
-        } catch (IOException | GeneralSecurityException e) {
-            statusLabel.setText("Nepodařilo se uložit lokální změnu plánu známek.");
+        persistGradesDebounceTimer.restart();
+    }
+
+    private void startPersistCurrentGradesWorker() {
+        if (persistInProgress) {
+            persistRequestedWhileBusy = true;
+            return;
         }
+        if (currentUserProfile == null || currentSessionPassword == null) {
+            return;
+        }
+
+        UserProfile profileSnapshot = currentUserProfile;
+        char[] passwordSnapshot = Arrays.copyOf(currentSessionPassword, currentSessionPassword.length);
+        List<GradeEntry> gradesSnapshot = List.copyOf(currentGrades);
+        persistInProgress = true;
+
+        SwingWorker<Void, Void> worker = new SwingWorker<>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                try {
+                    profileStore.saveCachedGrades(profileSnapshot, passwordSnapshot, gradesSnapshot);
+                    return null;
+                } finally {
+                    Arrays.fill(passwordSnapshot, '\0');
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (ExecutionException e) {
+                    statusLabel.setText("Nepodařilo se uložit lokální změnu plánu známek.");
+                } finally {
+                    persistInProgress = false;
+                    if (persistRequestedWhileBusy && currentUserProfile != null && currentSessionPassword != null) {
+                        persistRequestedWhileBusy = false;
+                        persistGradesDebounceTimer.restart();
+                    } else {
+                        persistRequestedWhileBusy = false;
+                    }
+                }
+            }
+        };
+        worker.execute();
     }
 
     private int countPlanningRowsWithConsultation() {
@@ -1052,6 +1141,14 @@ public final class BakapiFrame extends JFrame {
 
     private static String safePlanStatus(String status) {
         return normalizePlanStatus(status);
+    }
+
+    private void scheduleApplyColumnFilters() {
+        gradesFilterDebounceTimer.restart();
+    }
+
+    private void scheduleApplyPlanFilters() {
+        planFilterDebounceTimer.restart();
     }
 
     private void applyColumnFilters() {
@@ -1223,6 +1320,8 @@ public final class BakapiFrame extends JFrame {
     }
 
     private void clearFilters() {
+        gradesFilterDebounceTimer.stop();
+        planFilterDebounceTimer.stop();
         updatingFilterOptions = true;
         try {
             for (JComboBox<String> combo : filterCombos) {
@@ -1591,34 +1690,34 @@ public final class BakapiFrame extends JFrame {
     private final class FilterChangeListener implements DocumentListener {
         @Override
         public void insertUpdate(DocumentEvent e) {
-            applyColumnFilters();
+            scheduleApplyColumnFilters();
         }
 
         @Override
         public void removeUpdate(DocumentEvent e) {
-            applyColumnFilters();
+            scheduleApplyColumnFilters();
         }
 
         @Override
         public void changedUpdate(DocumentEvent e) {
-            applyColumnFilters();
+            scheduleApplyColumnFilters();
         }
     }
 
     private final class PlanFilterChangeListener implements DocumentListener {
         @Override
         public void insertUpdate(DocumentEvent e) {
-            applyPlanFilters();
+            scheduleApplyPlanFilters();
         }
 
         @Override
         public void removeUpdate(DocumentEvent e) {
-            applyPlanFilters();
+            scheduleApplyPlanFilters();
         }
 
         @Override
         public void changedUpdate(DocumentEvent e) {
-            applyPlanFilters();
+            scheduleApplyPlanFilters();
         }
     }
 }
