@@ -145,6 +145,7 @@ public final class BakalariClient {
             String dataClasif = mark.attr("data-clasif");
             JsonNode data = parseGradeData(dataClasif);
 
+            String sourceId = getSourceId(data);
             String subject = textOrDefault(data.get("nazev"), "Neznámý předmět");
             String teacher = getTeacher(data, mark, teacherBySubject, subject);
             String markText = textOrDefault(data.get("MarkText"), "?");
@@ -153,7 +154,7 @@ public final class BakalariClient {
             String weight = textOrDefault(data.get("vaha"), "");
             String note = cleanNote(textOrDefault(data.get("poznamkakzobrazeni"), ""));
 
-            grades.add(new GradeEntry(subject, teacher, markText, caption, note, weight, date));
+            grades.add(new GradeEntry(sourceId, subject, teacher, markText, caption, note, weight, date));
         }
 
         return List.copyOf(grades);
@@ -176,6 +177,17 @@ public final class BakalariClient {
             return "";
         }
         return Jsoup.parse(noteHtml).text().trim();
+    }
+
+    private static String getSourceId(JsonNode data) {
+        String[] keys = {"id", "ID", "Id", "classificationId", "ClassifId", "klasifikaceId", "ClassificationId"};
+        for (String key : keys) {
+            String value = textOrDefault(data.get(key), "");
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private static String getTeacher(JsonNode data, Element markElement, Map<String, String> teacherBySubject, String subject) {

@@ -1,6 +1,7 @@
 package cz.nero.bakapi.model;
 
 public record GradeEntry(
+        String sourceId,
         String subject,
         String teacher,
         String markText,

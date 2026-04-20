@@ -3,7 +3,9 @@ package cz.nero.bakapi.ui;
 import com.formdev.flatlaf.FlatDarkLaf;
 import com.formdev.flatlaf.FlatLightLaf;
 import cz.nero.bakapi.model.GradeEntry;
+import cz.nero.bakapi.model.UserProfile;
 import cz.nero.bakapi.service.BakalariClient;
+import cz.nero.bakapi.service.ProfileStore;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -16,11 +18,15 @@ import java.awt.GridBagLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Toolkit;
+import java.io.IOException;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -67,9 +73,10 @@ public final class BakapiFrame extends JFrame {
 
     private ThemeMode currentTheme;
     private boolean applyingTheme;
+    private boolean updatingProfileCombo;
 
     private final JTextField baseUrlField = new JTextField(getEnvOrDefault("BAKA_BASE_URL", "https://bakalari.infis.cz"), 28);
-    private final JTextField usernameField = new JTextField(getEnvOrDefault("BAKA_USER", ""), 20);
+    private final JComboBox<String> usernameCombo = new JComboBox<>();
     private final JPasswordField passwordField = new JPasswordField(getEnvOrDefault("BAKA_PASS", ""), 20);
     private final JButton loginButton = new JButton("Přihlásit a načíst známky");
     private final JButton refreshButton = new JButton("Obnovit");
@@ -124,6 +131,8 @@ public final class BakapiFrame extends JFrame {
     private final CardLayout cardLayout = new CardLayout();
     private final JPanel contentPanel = new JPanel(cardLayout);
     private final BakalariClient client = new BakalariClient();
+    private final ProfileStore profileStore = new ProfileStore();
+    private final Map<String, UserProfile> profilesByUsername = new LinkedHashMap<>();
 
     public BakapiFrame() {
         super("BAKAPI - Přehled známek");
@@ -145,11 +154,15 @@ public final class BakapiFrame extends JFrame {
         rootPanel.add(contentPanel, BorderLayout.CENTER);
         rootPanel.add(createStatusPanel(), BorderLayout.SOUTH);
 
+        usernameCombo.setEditable(true);
+        getUsernameEditorField().setText(getEnvOrDefault("BAKA_USER", ""));
+
         loginButton.addActionListener(event -> loadGrades());
         refreshButton.addActionListener(event -> loadGrades());
         logoutButton.addActionListener(event -> logout());
         baseUrlField.addActionListener(event -> loadGrades());
-        usernameField.addActionListener(event -> loadGrades());
+        getUsernameEditorField().addActionListener(event -> loadGrades());
+        usernameCombo.addActionListener(event -> onUsernameSelectionChanged());
         passwordField.addActionListener(event -> loadGrades());
         themeToggle.addActionListener(event -> {
             if (!applyingTheme) {
@@ -160,6 +173,7 @@ public final class BakapiFrame extends JFrame {
         configureComponentStyles();
         configureTables();
         switchTheme(currentTheme);
+        reloadStoredProfiles();
         showLoginView();
     }
 
@@ -210,7 +224,7 @@ public final class BakapiFrame extends JFrame {
 
         gbc.gridx = 1;
         gbc.weightx = 1.0;
-        panel.add(usernameField, gbc);
+        panel.add(usernameCombo, gbc);
 
         gbc.gridx = 0;
         gbc.gridy = 2;
@@ -383,7 +397,8 @@ public final class BakapiFrame extends JFrame {
 
     private void configureComponentStyles() {
         baseUrlField.putClientProperty("JTextField.placeholderText", "https://bakalari.infis.cz");
-        usernameField.putClientProperty("JTextField.placeholderText", "uživatelské jméno");
+        usernameCombo.putClientProperty("JComponent.roundRect", true);
+        getUsernameEditorField().putClientProperty("JTextField.placeholderText", "uživatelské jméno");
         passwordField.putClientProperty("JTextField.placeholderText", "heslo");
 
         loginButton.putClientProperty("JButton.buttonType", "roundRect");
@@ -420,6 +435,60 @@ public final class BakapiFrame extends JFrame {
         themeToggle.setText(themeToggle.isSelected() ? "Tmavý" : "Světlý");
     }
 
+    private void reloadStoredProfiles() {
+        try {
+            List<UserProfile> profiles = profileStore.loadProfiles();
+            String currentInput = getEnteredUsername();
+
+            updatingProfileCombo = true;
+            try {
+                profilesByUsername.clear();
+                DefaultComboBoxModel<String> model = new DefaultComboBoxModel<>();
+                for (UserProfile profile : profiles) {
+                    String key = normalizeUsernameKey(profile.username());
+                    profilesByUsername.put(key, profile);
+                    if (model.getIndexOf(profile.username()) < 0) {
+                        model.addElement(profile.username());
+                    }
+                }
+                usernameCombo.setModel(model);
+                usernameCombo.setEditable(true);
+                usernameCombo.getEditor().setItem(currentInput);
+            } finally {
+                updatingProfileCombo = false;
+            }
+
+            onUsernameSelectionChanged();
+        } catch (IOException e) {
+            statusLabel.setText("Nepodařilo se načíst uložené profily.");
+        }
+    }
+
+    private void onUsernameSelectionChanged() {
+        if (updatingProfileCombo) {
+            return;
+        }
+
+        String username = getEnteredUsername();
+        UserProfile profile = profilesByUsername.get(normalizeUsernameKey(username));
+        if (profile != null) {
+            baseUrlField.setText(profile.baseUrl());
+        }
+    }
+
+    private JTextField getUsernameEditorField() {
+        return (JTextField) usernameCombo.getEditor().getEditorComponent();
+    }
+
+    private String getEnteredUsername() {
+        Object item = usernameCombo.getEditor().getItem();
+        return item == null ? "" : item.toString().trim();
+    }
+
+    private static String normalizeUsernameKey(String username) {
+        return username == null ? "" : username.trim().toLowerCase(Locale.ROOT);
+    }
+
     private void showLoginView() {
         cardLayout.show(contentPanel, LOGIN_CARD);
         getRootPane().setDefaultButton(loginButton);
@@ -443,29 +512,48 @@ public final class BakapiFrame extends JFrame {
 
     private void loadGrades() {
         String baseUrl = baseUrlField.getText();
-        String username = usernameField.getText();
-        String password = new String(passwordField.getPassword());
+        String username = getEnteredUsername();
+        char[] password = passwordField.getPassword();
 
         setLoadingState(true);
         statusLabel.setText("Přihlašuji a načítám známky...");
 
-        SwingWorker<List<GradeEntry>, Void> worker = new SwingWorker<>() {
+        SwingWorker<LoadGradesResult, Void> worker = new SwingWorker<>() {
             @Override
-            protected List<GradeEntry> doInBackground() throws Exception {
-                return client.fetchGrades(baseUrl, username, password);
+            protected LoadGradesResult doInBackground() throws Exception {
+                try {
+                    List<GradeEntry> onlineGrades = client.fetchGrades(baseUrl, username, new String(password));
+                    UserProfile savedProfile = profileStore.saveOrUpdateProfile(baseUrl, username, password);
+                    profileStore.saveCachedGrades(savedProfile, password, onlineGrades);
+                    return new LoadGradesResult(onlineGrades, false);
+                } catch (InterruptedException e) {
+                    throw e;
+                } catch (IOException | GeneralSecurityException onlineError) {
+                    Optional<UserProfile> existingProfile = profileStore.findProfile(baseUrl, username);
+                    if (existingProfile.isPresent()) {
+                        List<GradeEntry> cachedGrades = profileStore.loadCachedGrades(existingProfile.get(), password);
+                        return new LoadGradesResult(cachedGrades, true);
+                    }
+                    throw onlineError;
+                } finally {
+                    Arrays.fill(password, '\0');
+                }
             }
 
             @Override
             protected void done() {
                 try {
-                    List<GradeEntry> grades = get();
-                    rebuildTables(grades);
+                    LoadGradesResult result = get();
+                    rebuildTables(result.grades());
                     showGradesView();
+                    reloadStoredProfiles();
 
-                    if (grades.isEmpty()) {
+                    if (result.grades().isEmpty()) {
                         statusLabel.setText("Na stránce nebyly nalezeny žádné známky.");
+                    } else if (result.offline()) {
+                        statusLabel.setText("Načteno " + result.grades().size() + " známek z lokálního šifrovaného úložiště.");
                     } else {
-                        statusLabel.setText("Načteno " + grades.size() + " známek.");
+                        statusLabel.setText("Načteno " + result.grades().size() + " známek.");
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -1049,6 +1137,9 @@ public final class BakapiFrame extends JFrame {
     private static String getEnvOrDefault(String key, String fallback) {
         String value = System.getenv(key);
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private record LoadGradesResult(List<GradeEntry> grades, boolean offline) {
     }
 
     private record ComputedGradeRow(GradeEntry grade, Double markValue, double weightValue) {

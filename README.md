@@ -12,6 +12,14 @@ UI podporuje **světlý/tmavý motiv**:
 
 Po spuštění se nejdřív zobrazí jen přihlašovací obrazovka. Přehled známek se otevře až po úspěšném přihlášení.
 
+## Lokální profily a offline režim
+
+- Aplikace si pamatuje přihlášené profily (URL + uživatel) a nabízí je v rozbalovacím seznamu uživatele.
+- Po úspěšném online načtení se známky uloží do lokálního šifrovaného cache.
+- Při dalším online načtení se cache aktualizuje po jednotlivých známkách (nezměněné záznamy se zachovají).
+- Při výpadku internetu se známky načtou z cache jen po zadání správného hesla k danému účtu.
+- Heslo se nikam neukládá v plaintextu; ukládá se pouze hash hesla a šifrovaná data.
+
 V přehledu známek je:
 - filtrovatelný každý sloupec (textové filtry),
 - u každé známky spočtený příspěvek do váženého průměru předmětu,

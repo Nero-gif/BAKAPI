@@ -11,6 +11,7 @@ out/
 # Local environment / secrets
 .env
 .env.*
+.bakapi/
 
 # OS / misc
 .DS_Store
