@@ -56,3 +56,39 @@ Volitelně je možné použít proměnné prostředí:
 - `BAKA_PASS`
 
 Tyto hodnoty se předvyplní do GUI formuláře.
+
+## Build instalovatelného balíčku (Linux)
+
+Projekt lze zabalit do `.deb` balíčku přes `jpackage`. Výsledná aplikace se po instalaci objeví v nabídce aplikací (menu) jako `BAKAPI`.
+
+Požadavky navíc:
+- JDK 21+ (musí obsahovat `jpackage`)
+
+Příkaz:
+
+```bash
+chmod +x scripts/build-linux-release.sh
+scripts/build-linux-release.sh 1.0.0
+```
+
+Výstup:
+- `dist/*.deb` — instalovatelný balíček pro Debian/Ubuntu
+
+Instalace:
+
+```bash
+sudo apt install ./dist/bakapi_1.0.0-1_amd64.deb
+```
+
+## GitHub Release (automaticky z tagu)
+
+Repo obsahuje workflow `.github/workflows/release.yml`, které při push tagu `v*`:
+- sestaví Linux `.deb` balíček,
+- přiloží ho jako artefakt a zároveň do GitHub Release.
+
+Příklad:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
