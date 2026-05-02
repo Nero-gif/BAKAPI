@@ -29,13 +29,8 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           scripts/build-linux-release.sh "$VERSION"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: bakapi-linux-package
-          path: dist/*.deb
-
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.deb
+          fail_on_unmatched_files: true
