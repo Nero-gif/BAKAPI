@@ -123,7 +123,12 @@ public final class BakalariClient {
 
     private static HttpResponse<String> sendExpectSuccess(HttpClient client, HttpRequest request, String errorMessage)
             throws IOException, InterruptedException {
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        HttpResponse<String> response;
+        try {
+            response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (IllegalArgumentException e) {
+            throw new IOException(errorMessage + " Server vrátil neplatné přesměrování URL.", e);
+        }
         int statusCode = response.statusCode();
         if (statusCode < 200 || statusCode >= 300) {
             throw new IOException(errorMessage + " HTTP " + statusCode + ".");
