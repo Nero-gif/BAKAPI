@@ -5,6 +5,7 @@
 
 # Build output
 target/
+dist/
 out/
 *.class
 

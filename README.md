@@ -77,14 +77,17 @@ Výstup:
 Instalace:
 
 ```bash
-sudo apt install ./dist/bakapi_1.0.0-1_amd64.deb
+sudo apt install ./dist/bakapi_1.0.0_amd64.deb
 ```
 
 ## GitHub Release (automaticky z tagu)
 
 Repo obsahuje workflow `.github/workflows/release.yml`, které při push tagu `v*`:
 - sestaví Linux `.deb` balíček,
-- přiloží ho jako artefakt a zároveň do GitHub Release.
+- přiloží `.deb` přímo do GitHub Release.
+
+Releases stránka:
+- https://github.com/Nero-gif/BAKAPI/releases
 
 Příklad:
 
