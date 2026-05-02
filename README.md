@@ -84,14 +84,22 @@ sudo apt install ./dist/bakapi_1.0.0_amd64.deb
 
 Repo obsahuje workflow `.github/workflows/release.yml`, které při push tagu `v*`:
 - sestaví Linux `.deb` balíček,
-- přiloží `.deb` přímo do GitHub Release.
+- sestaví Windows `.exe` instalátor,
+- přiloží oba soubory přímo do GitHub Release.
 
 Releases stránka:
 - https://github.com/Nero-gif/BAKAPI/releases
 
+Podporované platformy:
+- Linux (Debian/Ubuntu `.deb`)
+- Windows 10/11 (`.exe`)
+
+Poznámka k Windows Vista:
+- projekt je buildovaný na Java 21, takže Vista se prakticky nepodporuje.
+
 Příklad:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
